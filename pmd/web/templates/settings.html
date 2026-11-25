@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Settings · pm·dash{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Settings</h1><p>For all projects.</p></div>
+<div class="bento">
+  <form class="tile t-violet s5 form" method="post" action="/settings/time-zone">
+    <div class="eyebrow">Time zone</div>
+    <p class="scope">Today is {{ today }}.</p>
+    <div class="field"><label for="tz">Time zone name</label><input id="tz" name="time_zone" value="{{ time_zone }}" placeholder="e.g. Asia/Jakarta" maxlength="64"></div>
+    <p class="hint dark">Empty means the host's time zone ({{ host_zone }}). It decides what "today" is for days left and late tasks.</p>
+    <div class="row-end"><button class="pill" type="submit">Save time zone</button></div>
+  </form>
+
+  <div class="tile t-surface s7">
+    <div class="eyebrow">Holidays for all projects</div>
+    {% if holidays %}
+    <ul class="clist">{% for h in holidays %}<li><span><b>{{ short_date(h.date) }}</b> {{ h.date[:4] }} {{ h.label }}</span>
+      <form method="post" action="/settings/holidays/{{ h.id }}/remove"><button class="btn sm" type="submit">Remove</button></form></li>{% endfor %}</ul>
+    {% else %}<p class="muted">None yet.</p>{% endif %}
+    <form class="inline" method="post" action="/settings/holidays">
+      <label class="sr" for="hd">Date</label><input id="hd" name="date" type="date" required>
+      <label class="sr" for="hl">Label</label><input id="hl" name="label" maxlength="80" placeholder="Label, e.g. Christmas Day">
+      <button class="btn" type="submit">Add holiday</button>
+    </form>
+    <p class="hint">Holidays only change the count of working days. Each project can add its own on its Holidays tab.</p>
+  </div>
+
+  <div class="tile t-surface s7">
+    <div class="eyebrow">People</div>
+    {% if people %}
+    <ul class="clist">{% for person in people %}<li>
+      <form class="inline grow" method="post" action="/settings/people/{{ person.id }}">
+        <label class="sr" for="pp{{ person.id }}">Name</label><input id="pp{{ person.id }}" name="name" value="{{ person.display_name }}" required maxlength="80">
+        <button class="btn sm" type="submit">Rename</button>
+      </form></li>{% endfor %}</ul>
+    {% else %}<p class="muted">Nobody yet. People are added when you name a task owner, or here.</p>{% endif %}
+    <form class="inline" method="post" action="/settings/people">
+      <label class="sr" for="np">New person</label><input id="np" name="name" required maxlength="80" placeholder="Name">
+      <button class="btn" type="submit">Add person</button>
+    </form>
+  </div>
+
+  <div class="tile t-night s5">
+    <div class="eyebrow">Archived projects</div>
+    {% if archived %}
+    <ul class="clist">{% for a in archived %}<li><span><a href="/p/{{ a.key }}">{{ a.name }}</a> <span class="soft">{{ a.key }}</span></span>
+      <form method="post" action="/p/{{ a.key }}/state"><input type="hidden" name="back" value="/settings"><button class="btn sm" name="state" value="ACTIVE" type="submit">Restore</button></form></li>{% endfor %}</ul>
+    {% else %}<p class="soft">None.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

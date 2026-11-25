@@ -1,0 +1,47 @@
+{# Shared parts of the visual language (Design §6-9). #}
+
+{% macro sticker(status, big=False, extra="") -%}
+<span class="sticker {{ status.cls }}{% if big %} big{% endif %} {{ extra }}"><i aria-hidden="true">{{ status.icon }}</i>{{ status.word }}</span>
+{%- endmacro %}
+
+{% macro badge(text) -%}<span class="own">{{ text }}</span>{%- endmacro %}
+
+{# Decorative shapes only (R-V5): no data, hidden from screen readers. #}
+{% macro blob(colour) -%}
+{% if colour == "VIOLET" -%}
+<svg class="blob" aria-hidden="true" viewBox="0 0 200 200" style="right:-70px;bottom:-80px;width:300px"><circle cx="100" cy="100" r="96" fill="#ff5aa5"/><circle cx="100" cy="100" r="54" fill="#6a43ff"/></svg>
+{%- elif colour == "BLUE" -%}
+<svg class="blob" aria-hidden="true" viewBox="0 0 200 200" style="right:-60px;bottom:-70px;width:240px"><rect x="20" y="20" width="160" height="160" rx="40" fill="#3fe0a6" transform="rotate(18 100 100)"/></svg>
+{%- elif colour == "TANGERINE" -%}
+<svg class="blob" aria-hidden="true" viewBox="0 0 200 200" style="right:-70px;bottom:-95px;width:230px"><path d="M10 150 Q60 60 100 120 T190 80" stroke="#6a43ff" stroke-width="26" fill="none" stroke-linecap="round"/></svg>
+{%- elif colour == "PINK" -%}
+<svg class="blob" aria-hidden="true" viewBox="0 0 100 100" style="right:-18px;top:-18px;width:130px"><path fill="#ffd84a" d="M50 0 L61 35 L98 35 L68 57 L79 92 L50 70 L21 92 L32 57 L2 35 L39 35Z"/></svg>
+{%- else -%}
+<svg class="blob" aria-hidden="true" viewBox="0 0 200 200" style="right:-60px;bottom:-60px;width:250px"><circle cx="70" cy="100" r="60" fill="#6a43ff"/><circle cx="130" cy="100" r="60" fill="#ff5aa5" style="mix-blend-mode:multiply"/></svg>
+{%- endif %}
+{%- endmacro %}
+
+{% macro segbar(summary, label="") -%}
+<div class="segbar" role="img" aria-label="{% for s in summary.segments %}{{ s.n }} {{ s.word|lower }}{% if not loop.last %}, {% endif %}{% endfor %}">
+  {%- for s in summary.segments %}<span class="{{ s.o }}" style="flex:{{ s.n }}"></span>{% endfor -%}
+</div>
+<div class="lg">{% for s in summary.segments %}<span><b class="{{ s.o }}"></b>{{ s.n }} {{ s.word|lower }}</span>{% endfor %}</div>
+{%- endmacro %}
+
+{# The health dialog: the only way a confirmed value is made (R-C1). #}
+{% macro health_dialog(project_key, gate, back) -%}
+<dialog id="health-{{ gate.id }}" aria-labelledby="health-title-{{ gate.id }}">
+  <form class="dlg" method="post" action="/p/{{ project_key }}/gates/{{ gate.id }}/health">
+    <header><h2 id="health-title-{{ gate.id }}">Health of {{ gate.key }}</h2><button class="btn" type="button" data-close>Close</button></header>
+    <p class="muted">What you save here is your judgment. It is kept with the date, and a run never changes it.</p>
+    <input type="hidden" name="back" value="{{ back }}">
+    <div class="field"><label for="hv-{{ gate.id }}">Value</label>
+      <select id="hv-{{ gate.id }}" name="value" required>
+        {% for v in ("ON_TRACK", "AT_RISK", "LATE") %}<option value="{{ v }}" {% if gate.health == v %}selected{% endif %}>{{ STATUS[v].icon }} {{ STATUS[v].word }}</option>{% endfor %}
+      </select></div>
+    <div class="field"><label for="hn-{{ gate.id }}">Note</label>
+      <textarea id="hn-{{ gate.id }}" name="note" rows="2" placeholder="Why you set this value"></textarea></div>
+    <div class="row-end"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" type="submit">Save as confirmed</button></div>
+  </form>
+</dialog>
+{%- endmacro %}

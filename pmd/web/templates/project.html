@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% from "_ui.html" import sticker, badge, blob, segbar, health_dialog %}
+{% set p = project %}
+{% block title %}{{ p.name }} · pm·dash{% endblock %}
+{% block main %}
+<div class="vhead">
+  <h1>{{ p.name }}</h1>
+  <div class="tagrow"><span class="tag">{{ p.key }}</span><span class="tag">manual</span>{% if p.state != "ACTIVE" %}<span class="tag">{{ p.state|lower }}</span>{% endif %}</div>
+</div>
+<nav class="tabs" aria-label="Project">
+  {% for t, label in (("overview", "Overview"), ("gates", "Gates and evidence"), ("tasks", "Tasks"), ("holidays", "Holidays")) %}
+  <a href="/p/{{ p.key }}?tab={{ t }}" {% if tab == t %}aria-current="page"{% endif %}>{{ label }}{% if t == "tasks" and late_count %} <span class="count">{{ late_count }} late</span>{% endif %}</a>
+  {% endfor %}
+</nav>
+
+{# ================================================================ overview #}
+{% if tab == "overview" %}
+<div class="bento">
+  <div class="tile {{ tile }} s5">
+    {{ blob(p.colour) }}
+    <div class="eyebrow">Scope {{ badge("hand") }}</div>
+    <p class="scope">{{ p.scope_note or "No scope written yet." }}</p>
+    {% if p.description %}<p class="soft">{{ p.description }}</p>{% endif %}
+    <dl class="kv">
+      <dt>Open gates</dt><dd>{{ gates|length }}</dd>
+      <dt>Tasks</dt><dd>{{ tasks|length }}{% if late_count %} · {{ late_count }} late{% endif %}</dd>
+      <dt>Colour</dt><dd>{{ COLOUR_WORD[p.colour] }}</dd>
+    </dl>
+  </div>
+  <form class="tile t-surface s7 form" method="post" action="/p/{{ p.key }}/edit">
+    <div class="eyebrow">Edit project</div>
+    <input type="hidden" name="back" value="/p/{{ p.key }}">
+    <div class="field"><label for="pn">Name</label><input id="pn" name="name" required maxlength="120" value="{{ p.name }}"></div>
+    <div class="field"><label for="pd">Description</label><textarea id="pd" name="description" rows="2" maxlength="2000">{{ p.description }}</textarea></div>
+    <div class="field"><label for="ps">Scope</label><textarea id="ps" name="scope_note" rows="4" maxlength="4000">{{ p.scope_note }}</textarea></div>
+    <div class="row-end"><button class="btn primary" type="submit">Save</button></div>
+  </form>
+  <div class="tile t-surface s7">
+    <div class="eyebrow">Colour and state</div>
+    <form class="inline" method="post" action="/p/{{ p.key }}/colour">
+      <input type="hidden" name="back" value="/p/{{ p.key }}">
+      <label for="pc">Colour</label>
+      <select id="pc" name="colour">{% for c in COLOURS %}<option value="{{ c }}" {% if c == p.colour %}selected{% endif %}>{{ COLOUR_WORD[c] }}</option>{% endfor %}</select>
+      <button class="btn" type="submit">Save colour</button>
+    </form>
+    <p class="hint">The colour stays with the project. Adding or archiving other projects never changes it.</p>
+    <form class="inline" method="post" action="/p/{{ p.key }}/state">
+      <input type="hidden" name="back" value="/p/{{ p.key }}">
+      {% if p.state != "ACTIVE" %}<button class="btn" name="state" value="ACTIVE" type="submit">Make active</button>{% endif %}
+      {% if p.state == "ACTIVE" %}<button class="btn" name="state" value="PAUSED" type="submit">Pause</button>{% endif %}
+      {% if p.state != "ARCHIVED" %}<button class="btn" name="state" value="ARCHIVED" type="submit" data-confirm="Archive {{ p.name }}? It is hidden from Today and kept in Settings.">Archive</button>{% endif %}
+    </form>
+    <p class="hint">Paused projects stay on Today. Archived projects are hidden and listed in Settings.</p>
+  </div>
+  <form class="tile t-red s5 form" method="post" action="/p/{{ p.key }}/delete" data-confirm="Delete {{ p.name }} and all its gates, evidence, tasks and confirmations? This cannot be undone.">
+    <div class="eyebrow">Delete project</div>
+    <p>Removes the project and everything in it. Archive it instead if you may need the record.</p>
+    <input type="hidden" name="back" value="/p/{{ p.key }}">
+    <div class="field"><label for="dk">Type {{ p.key }} to confirm</label><input id="dk" name="confirm_key" autocomplete="off" required></div>
+    <div class="row-end"><button class="pill" type="submit">Delete project</button></div>
+  </form>
+</div>
+{% endif %}
+
+{# ================================================================ gates #}
+{% if tab == "gates" %}
+<details class="tile t-lime adder" {% if not gates %}open{% endif %}>
+  <summary><span class="eyebrow">Add a gate</span></summary>
+  <form class="form grid3" method="post" action="/p/{{ p.key }}/gates">
+    <input type="hidden" name="back" value="/p/{{ p.key }}?tab=gates">
+    <div class="field"><label for="gk">Key</label><input id="gk" name="key" required maxlength="16" placeholder="e.g. G1"></div>
+    <div class="field"><label for="gn">Name</label><input id="gn" name="name" required maxlength="120" placeholder="e.g. Step 1 acceptance"></div>
+    <div class="field"><label for="gd">Date</label><input id="gd" name="date" type="date" required></div>
+    <div class="field span3"><label for="gdesc">Description</label><input id="gdesc" name="description" maxlength="2000"></div>
+    <div class="row-end span3"><button class="pill" type="submit">Add gate</button></div>
+  </form>
+  <p class="hint dark">A gate key is never reused in a project, even after the gate is closed.</p>
+</details>
+
+{% if not gates %}<p class="empty-line">No open gates. Add the first one above.</p>{% endif %}
+
+{% for g in gates %}
+<section class="tile t-surface gate" id="g-{{ g.id }}">
+  <div class="gate-head">
+    <div class="gate-key">{{ g.key }}</div>
+    <div class="gate-title">
+      <h2>{{ g.name }}</h2>
+      <div class="muted">{{ g.long }} ·
+        {% if g.is_past %}{{ g.past }} {{ plural(g.past, "working day") }} past{% else %}{{ g.left }} {{ plural(g.left, "working day") }} left{% endif %}</div>
+    </div>
+    <div class="gate-status">
+      {% if g.outcome %}{{ sticker(g.outcome) }}{% else %}{{ sticker(g.status) }}{% if g.confirmation %}<span class="muted small">set {{ g.confirmed_on }}</span>{% endif %}{% endif %}
+      {% if not g.outcome %}<button class="btn" type="button" data-open="health-{{ g.id }}">{{ "Change health" if g.confirmation else "Set health" }}</button>{% endif %}
+    </div>
+  </div>
+  {% if g.row.description %}<p class="soft">{{ g.row.description }}</p>{% endif %}
+  {% if g.outcome and g.row.outcome == "CONDITIONAL_PASS" %}<p class="note-line">Open: {{ g.row.open_scope }} · owner {{ g.row.open_owner }} · close by {{ short_date(g.row.close_date) }}</p>{% endif %}
+  {% if g.outcome and g.row.outcome_note %}<p class="note-line">{{ g.row.outcome_note }}</p>{% endif %}
+
+  <h3 class="sub">Acceptance evidence</h3>
+  {% if g.summary.total %}{{ segbar(g.summary) }}<p class="summary">{{ g.summary.line }}</p>{% endif %}
+  <ol class="toplist">
+    {% for it in g["items"] %}
+    {% set i = it.row %}
+    <li>
+      <span class="rank">{{ "%02d"|format(loop.index) }}</span>
+      <span>
+        <span class="state"><b aria-hidden="true">{{ it.look.icon }}</b>{{ it.look.word }}</span><br>
+        <span class="t">{{ i.text }}</span>
+        {% if i.note or i.evidence_url %}<br><span class="d">{{ i.note }}{% if i.note and i.evidence_url %} · {% endif %}{% if i.evidence_url %}<a href="{{ i.evidence_url }}" rel="noreferrer noopener" target="_blank">evidence link</a>{% endif %}</span>{% endif %}
+      </span>
+      <span class="acts">
+        {% if i.hand_state %}
+          {{ badge("hand") }}
+          <form method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state"><input type="hidden" name="state" value=""><button class="btn sm" type="submit">Reopen</button></form>
+        {% else %}
+          <details class="pop"><summary class="btn sm primary">Mark met</summary>
+            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state">
+              <input type="hidden" name="state" value="MET">
+              <div class="field"><label for="mu-{{ i.id }}">Evidence link (optional)</label><input id="mu-{{ i.id }}" name="evidence_url" type="url" placeholder="https://"></div>
+              <div class="field"><label for="mn-{{ i.id }}">Note (optional)</label><input id="mn-{{ i.id }}" name="note" maxlength="1000"></div>
+              <button class="btn primary sm" type="submit">Mark met</button>
+            </form>
+          </details>
+          <details class="pop"><summary class="btn sm">Waive</summary>
+            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state">
+              <input type="hidden" name="state" value="WAIVED">
+              <div class="field"><label for="wn-{{ i.id }}">Why it no longer applies</label><input id="wn-{{ i.id }}" name="note" required maxlength="1000"></div>
+              <button class="btn sm" type="submit">Waive</button>
+            </form>
+          </details>
+        {% endif %}
+        <details class="pop"><summary class="btn sm" aria-label="More actions for item {{ loop.index }}">⋯</summary>
+          <div class="popbody">
+            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/edit">
+              <div class="field"><label for="et-{{ i.id }}">Text</label><input id="et-{{ i.id }}" name="text" value="{{ i.text }}" required maxlength="500"></div>
+              <button class="btn sm" type="submit">Save text</button>
+            </form>
+            <form class="inline" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/move">
+              <button class="btn sm" name="direction" value="up" type="submit" {% if loop.first %}disabled{% endif %}>Move up</button>
+              <button class="btn sm" name="direction" value="down" type="submit" {% if loop.last %}disabled{% endif %}>Move down</button>
+            </form>
+            <form method="post" action="/p/{{ p.key }}/items/{{ i.id }}/remove" data-confirm="{{ 'Close this met item? It stays in the record.' if i.hand_state == 'MET' else 'Remove this item?' }}">
+              <button class="btn sm danger" type="submit">{{ "Close item" if i.hand_state == "MET" else "Remove" }}</button>
+            </form>
+          </div>
+        </details>
+      </span>
+    </li>
+    {% endfor %}
+  </ol>
+  <form class="inline add-item" method="post" action="/p/{{ p.key }}/gates/{{ g.id }}/items">
+    <label class="sr" for="ni-{{ g.id }}">New evidence item for {{ g.key }}</label>
+    <input id="ni-{{ g.id }}" name="text" required maxlength="500" placeholder="New evidence item, in the words of whoever accepts the gate">
+    <button class="btn" type="submit">Add item</button>
+  </form>
+
+  <div class="gate-more">
+    <details><summary>Edit gate</summary>
+      <form class="form grid3" method="post" action="/p/{{ p.key }}/gates/{{ g.id }}">
+        <div class="field"><label for="en-{{ g.id }}">Name</label><input id="en-{{ g.id }}" name="name" value="{{ g.name }}" required maxlength="120"></div>
+        <div class="field"><label for="ed-{{ g.id }}">Date</label><input id="ed-{{ g.id }}" name="date" type="date" value="{{ g.date }}" required></div>
+        <div class="field"><label for="es-{{ g.id }}">Description</label><input id="es-{{ g.id }}" name="description" value="{{ g.row.description }}" maxlength="2000"></div>
+        <div class="row-end span3"><button class="btn primary" type="submit">Save gate</button></div>
+      </form>
+    </details>
+    <details><summary>Record outcome</summary>
+      <form class="form grid3" method="post" action="/p/{{ p.key }}/gates/{{ g.id }}/outcome">
+        <div class="field"><label for="oc-{{ g.id }}">Outcome</label>
+          <select id="oc-{{ g.id }}" name="outcome">
+            <option value="" {% if not g.row.outcome %}selected{% endif %}>No outcome yet</option>
+            {% for o in ("PASS", "CONDITIONAL_PASS", "REWORK") %}<option value="{{ o }}" {% if g.row.outcome == o %}selected{% endif %}>{{ OUTCOME[o].word }}</option>{% endfor %}
+          </select></div>
+        <div class="field span2"><label for="on-{{ g.id }}">Note</label><input id="on-{{ g.id }}" name="outcome_note" value="{{ g.row.outcome_note }}" maxlength="2000"></div>
+        <div class="field"><label for="os-{{ g.id }}">Open scope (conditional pass)</label><input id="os-{{ g.id }}" name="open_scope" value="{{ g.row.open_scope }}" maxlength="2000"></div>
+        <div class="field"><label for="oo-{{ g.id }}">Owner of the open scope</label><input id="oo-{{ g.id }}" name="open_owner" value="{{ g.row.open_owner }}" maxlength="120"></div>
+        <div class="field"><label for="ol-{{ g.id }}">Close by</label><input id="ol-{{ g.id }}" name="close_date" type="date" value="{{ g.row.close_date }}"></div>
+        <div class="row-end span3"><button class="btn primary" type="submit">Save outcome</button></div>
+      </form>
+    </details>
+    {% if g.history %}
+    <details><summary>Health history ({{ g.history|length }})</summary>
+      <ul class="clist">{% for c in g.history %}<li><span>{{ sticker(STATUS[c.row.value]) }} {{ c.row.note }}</span><span class="muted small">{{ c.when }}</span></li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+    <form method="post" action="/p/{{ p.key }}/gates/{{ g.id }}/close" data-confirm="Close {{ g.key }}? It is hidden but kept, and its key is never reused.">
+      <button class="btn sm" type="submit">Close gate</button>
+    </form>
+  </div>
+</section>
+{{ health_dialog(p.key, g, "/p/" ~ p.key ~ "?tab=gates#g-" ~ g.id) }}
+{% endfor %}
+
+{% if closed %}
+<details class="tile t-surface">
+  <summary><span class="eyebrow">Closed gates ({{ closed|length }})</span></summary>
+  <ul class="clist">{% for c in closed %}<li><span><b>{{ c.key }}</b> {{ c.name }}</span><span class="muted small">{{ short_date(c.date) }} · closed {{ c.closed_at[:10] }}</span></li>{% endfor %}</ul>
+</details>
+{% endif %}
+{% endif %}
+
+{# ================================================================ tasks #}
+{% if tab == "tasks" %}
+<datalist id="people">{% for person in people %}<option value="{{ person.display_name }}">{% endfor %}</datalist>
+<datalist id="gatekeys">{% for g in gates %}<option value="{{ g.key }}">{{ g.name }}</option>{% endfor %}</datalist>
+
+<details class="tile t-lime adder" {% if not tasks %}open{% endif %}>
+  <summary><span class="eyebrow">Add a task</span></summary>
+  <form class="form grid4" method="post" action="/p/{{ p.key }}/tasks">
+    <input type="hidden" name="back" value="/p/{{ p.key }}?tab=tasks">
+    <div class="field"><label for="tk">Key</label><input id="tk" name="key" required maxlength="24" placeholder="e.g. 1.023"></div>
+    <div class="field span3"><label for="tt">Title</label><input id="tt" name="title" required maxlength="200"></div>
+    <div class="field"><label for="to">Owner</label><input id="to" name="owner" list="people" maxlength="80"></div>
+    <div class="field"><label for="tg">Gate</label><input id="tg" name="gate_key" list="gatekeys" maxlength="16"></div>
+    <div class="field"><label for="ts">Start</label><input id="ts" name="start" type="date"></div>
+    <div class="field"><label for="tf">Finish</label><input id="tf" name="finish" type="date"></div>
+    <div class="field"><label for="tst">Status</label><select id="tst" name="status">{% for s in TASK_STATUSES %}<option value="{{ s }}">{{ TASK_STATUS_WORD[s] }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="tdep">Depends on</label><input id="tdep" name="depends_on" maxlength="500" placeholder="task keys, e.g. 1.020; 1.021"></div>
+    <div class="field span2"><label for="tn">Note</label><input id="tn" name="note" maxlength="1000"></div>
+    <div class="row-end span4"><button class="pill" type="submit">Add task</button></div>
+  </form>
+</details>
+
+{% if tasks %}
+<div class="tile t-night tasks">
+  <div class="task-row head" aria-hidden="true"><span>Key</span><span>Task</span><span>Gate</span><span>Owner</span><span>Finish</span><span>Status</span></div>
+  {% for t in tasks %}{% set r = t.row %}
+  <details class="task">
+    <summary class="task-row">
+      <span class="num">{{ r.key }}</span>
+      <span class="t">{{ r.title }}</span>
+      <span>{{ r.gate_key or "–" }}</span>
+      <span>{{ r.owner or "–" }}</span>
+      <span>{{ short_date(r.finish) if r.finish else "–" }}</span>
+      <span>{{ t.status_word }}{% if t.late %} <span class="late">{{ t.late }}d late</span>{% endif %}</span>
+    </summary>
+    <form class="form grid4" method="post" action="/p/{{ p.key }}/tasks/{{ r.id }}">
+      <div class="field span4"><label for="et{{ r.id }}">Title</label><input id="et{{ r.id }}" name="title" value="{{ r.title }}" required maxlength="200"></div>
+      <div class="field"><label for="eo{{ r.id }}">Owner</label><input id="eo{{ r.id }}" name="owner" value="{{ r.owner or '' }}" list="people" maxlength="80"></div>
+      <div class="field"><label for="eg{{ r.id }}">Gate</label><input id="eg{{ r.id }}" name="gate_key" value="{{ r.gate_key }}" list="gatekeys" maxlength="16"></div>
+      <div class="field"><label for="es{{ r.id }}">Start</label><input id="es{{ r.id }}" name="start" type="date" value="{{ r.start }}"></div>
+      <div class="field"><label for="ef{{ r.id }}">Finish</label><input id="ef{{ r.id }}" name="finish" type="date" value="{{ r.finish }}"></div>
+      <div class="field"><label for="est{{ r.id }}">Status</label><select id="est{{ r.id }}" name="status">{% for s in TASK_STATUSES %}<option value="{{ s }}" {% if s == r.status %}selected{% endif %}>{{ TASK_STATUS_WORD[s] }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="ed{{ r.id }}">Depends on</label><input id="ed{{ r.id }}" name="depends_on" value="{{ r.depends_on }}" maxlength="500"></div>
+      <div class="field span2"><label for="en{{ r.id }}">Note</label><input id="en{{ r.id }}" name="note" value="{{ r.note }}" maxlength="1000"></div>
+      <div class="row-end span4"><button class="btn primary" type="submit">Save task</button></div>
+    </form>
+    <form class="row-end" method="post" action="/p/{{ p.key }}/tasks/{{ r.id }}/remove" data-confirm="Remove task {{ r.key }}?"><button class="btn sm danger" type="submit">Remove task</button></form>
+  </details>
+  {% endfor %}
+</div>
+<p class="hint">A task is late when its finish date has passed and it is not done or deferred. Late days count working days only.</p>
+{% else %}
+<p class="empty-line">No tasks yet.</p>
+{% endif %}
+{% endif %}
+
+{# ================================================================ holidays #}
+{% if tab == "holidays" %}
+<div class="bento">
+  <div class="tile t-surface s7">
+    <div class="eyebrow">Holidays of this project {{ badge("hand") }}</div>
+    {% if holidays %}
+    <ul class="clist">{% for h in holidays %}<li><span><b>{{ short_date(h.date) }}</b> {{ h.date[:4] }} {{ h.label }}</span>
+      <form method="post" action="/p/{{ p.key }}/holidays/{{ h.id }}/remove"><button class="btn sm" type="submit">Remove</button></form></li>{% endfor %}</ul>
+    {% else %}<p class="muted">None. Weekdays count as working days.</p>{% endif %}
+    <form class="inline" method="post" action="/p/{{ p.key }}/holidays">
+      <label class="sr" for="hd">Date</label><input id="hd" name="date" type="date" required>
+      <label class="sr" for="hl">Label</label><input id="hl" name="label" maxlength="80" placeholder="Label, e.g. Team offsite">
+      <button class="btn" type="submit">Add holiday</button>
+    </form>
+  </div>
+  <div class="tile t-night s5">
+    <div class="eyebrow">Holidays for all projects</div>
+    {% if global_holidays %}
+    <ul class="clist">{% for h in global_holidays %}<li><span><b>{{ short_date(h.date) }}</b> {{ h.date[:4] }} {{ h.label }}</span></li>{% endfor %}</ul>
+    {% else %}<p class="soft">None.</p>{% endif %}
+    <a class="src" href="/settings">Edit in Settings →</a>
+  </div>
+</div>
+<p class="hint">Holidays change the count of working days left. The weekday run still starts on a holiday.</p>
+{% endif %}
+{% endblock %}

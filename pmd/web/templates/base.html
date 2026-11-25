@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}pm·dash{% endblock %}</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/pmd.css?v={{ version }}">
+<script src="/static/pmd.js?v={{ version }}" defer></script>
+</head>
+<body>
+<div class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="11" cy="16" r="9" fill="#c9f23f"/><circle cx="21" cy="16" r="9" fill="#ff5aa5" style="mix-blend-mode:multiply"/></svg>pm·dash</a>
+    <nav class="nav" aria-label="Views">
+      <a href="/" {% if nav == "today" %}aria-current="page"{% endif %}>Today</a>
+      <a href="/settings" {% if nav == "settings" %}aria-current="page"{% endif %}>Settings</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="snap" title="Reading repositories arrives in Phase 2"><span class="sticker xs unk"><i aria-hidden="true">?</i>No run yet</span>kept by hand</span>
+    <a class="btn" href="/projects/new" {% if nav == "new" %}aria-current="page"{% endif %}>Add project</a>
+    <button class="btn icon" type="button" data-theme-toggle title="Switch light and dark" aria-label="Switch light and dark">◐</button>
+  </div>
+</div>
+{% if msg %}<div class="flash ok" role="status"><div class="wrap">✓ {{ msg }}</div></div>{% endif %}
+{% if err %}<div class="flash err" role="alert"><div class="wrap">✕ {{ err }}</div></div>{% endif %}
+<div class="flash err" role="alert" id="net-error" hidden><div class="wrap"></div></div>
+<main class="wrap">
+{% block main %}{% endblock %}
+</main>
+<footer class="foot"><div class="wrap">pm·dash {{ version }} · Phase 1 · hand data only</div></footer>
+</body>
+</html>

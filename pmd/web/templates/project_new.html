@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Add project · pm·dash{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Add project</h1><p>Step 1 of 2: name and key. Next you add its gates.</p></div>
+<form class="tile t-surface form narrow" method="post" action="/projects">
+  <input type="hidden" name="back" value="/projects/new">
+  <div class="field"><label for="name">Name</label><input id="name" name="name" required maxlength="120" placeholder="e.g. Billing migration" autofocus></div>
+  <div class="field"><label for="key">Key</label><input id="key" name="key" required maxlength="12" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,11}" placeholder="e.g. BILL" autocapitalize="characters">
+    <p class="hint">2 to 12 letters, digits or dashes. It appears in links and never changes.</p></div>
+  <div class="field"><label for="description">Description</label><textarea id="description" name="description" rows="2" maxlength="2000"></textarea></div>
+  <div class="field"><label for="scope_note">Scope</label><textarea id="scope_note" name="scope_note" rows="3" maxlength="4000" placeholder="What is in and out of this project"></textarea></div>
+  <p class="hint">Sources (git repositories) come with reading by program. For now the project is kept by hand.</p>
+  <div class="row-end"><a class="btn" href="/">Cancel</a><button class="btn primary" type="submit">Add project</button></div>
+</form>
+{% endblock %}
