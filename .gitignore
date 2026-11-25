@@ -15,11 +15,11 @@ build/
 # Never in this repository: data of tracked projects and secrets (README)
 *.sqlite3
 *.sqlite3-*
-data/
-secrets/
-mirrors/
-runs/
-digests/
+/data/
+/secrets/
+/mirrors/
+/runs/
+/digests/
 .env
 .env.*
 
