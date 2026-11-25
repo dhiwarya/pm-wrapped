@@ -26,7 +26,7 @@
     <div class="eyebrow">Onboarding {{ onboarding.id }} · {{ started }}</div>
     <div class="n review-n" data-count="{{ open }}">{{ open }}</div>
     <div class="what">{{ plural(open, "proposal") }} left to decide, of {{ total }}</div>
-    <p class="soft">{% if onboarding.prose_read %}Prose read by the model. {{ onboarding.dropped }} {{ plural(onboarding.dropped, "proposal") }} dropped by the quote check. Model cost ${{ "%.2f"|format(onboarding.model_cost) }}.{% else %}Prose not read: only what a program found exactly is proposed.{% endif %} Took {{ took }}.</p>
+    <p class="soft">{% if onboarding.prose_read %}Prose read by the model. {{ onboarding.dropped }} {{ plural(onboarding.dropped, "proposal") }} dropped by the quote check. Claude usage ${{ "%.2f"|format(onboarding.model_cost) }}.{% else %}Only setup found by the program is shown.{% endif %}{% if onboarding.used_codex %} Codex fallback attempted.{% endif %} Took {{ took }}.</p>
   </div>
   <div class="tile t-night s5">
     <div class="eyebrow">Read</div>

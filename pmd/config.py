@@ -24,6 +24,8 @@ class Config:
     tailnet_name: str | None = None
     allowed_login: str | None = None
     extra_hosts: tuple[str, ...] = ()
+    codex_fallback: bool = True
+    codex_model: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -50,4 +52,6 @@ def load(path: Path | None = None) -> Config:
         tailnet_name=raw.get("tailnet_name") or None,
         allowed_login=raw.get("allowed_login") or None,
         extra_hosts=tuple(raw.get("extra_hosts", ())),
+        codex_fallback=raw.get("codex_fallback", True),
+        codex_model=raw.get("codex_model") or None,
     )

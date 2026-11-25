@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% from '_ui.html' import srclink %}
+{% block title %}Changes · pm·dash{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Changes</h1></div>
+{% if digest %}
+<section class="tile t-surface digest">
+  <div class="row"><h2>{{ short_date(digest.day) }} digest</h2><a class="btn primary" href="/story/{{ digest.day }}">Play story</a></div>
+  <pre class="digest-text">{{ digest.text }}</pre>
+  {% if days|length > 1 or historical %}<nav class="row" aria-label="Digest history"><a href="/changes">Latest run</a>
+    {% for day in days %}<a href="/changes/{{ day }}"{% if historical and day == digest.day %} aria-current="page"{% endif %}>{{ short_date(day) }}</a>{% endfor %}
+  </nav>{% endif %}
+</section>
+{% else %}
+<p>The weekday digest will appear after the first scheduled run.</p>
+{% endif %}
+<section class="tile t-surface change-list">
+  <h2>{% if historical %}Changes for {{ short_date(digest.day) }}{% else %}Since the last snapshot{% endif %}</h2>
+  {% for project_id, items in changes|groupby('project_group') %}
+    <h3 id="project-{{ project_id or 'dashboard' }}">{{ items[0].project }}</h3>
+    <ul class="clist">{% for change in items %}
+      <li><details><summary>{{ change.change|capitalize }} · {{ change.kind|replace('_', ' ') }} · {{ change.subject_key }}</summary>
+        {% if change.old %}<p class="muted">Before</p><pre>{{ change.old|fromjson|tojson(indent=2) }}</pre>{% endif %}
+        {% if change.new %}<p class="muted">After</p><pre>{{ change.new|fromjson|tojson(indent=2) }}</pre>{% endif %}
+        {{ srclink(change.src) }}
+      </details></li>
+    {% endfor %}</ul>
+  {% else %}<p>No changes recorded.</p>{% endfor %}
+</section>
+{% endblock %}

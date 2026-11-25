@@ -1,7 +1,4 @@
-"""``pm-dash run``: ST-1 Fetch, ST-2 Extract, ST-3 Compare, ST-8 Publish (Part 3 §10).
-
-The model stages (ST-4, ST-5), the diff, the digest and the story come in Phase 3.
-"""
+"""Run the fetch, extraction, assessment and publication pipeline (Part 3 §10)."""
 
 from __future__ import annotations
 
@@ -17,10 +14,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..adapters import Result, aidlc, github as gh_adapter, wbs
 from ..config import Config
 from ..data import db, run as R
+from ..model import provider
 from ..rules import compare
 from ..sources import git
 from ..sources.github import GitHubError, ReadOnlyGitHub, fetch_repo, read_token
 from .lock import Busy, exclusive
+from . import assessment, digest
 
 GitHubFactory = Callable[[str | None, Callable], ReadOnlyGitHub]
 
@@ -54,20 +53,20 @@ def default_github(token: str | None, log: Callable) -> ReadOnlyGitHub:
 
 
 def run(config: Config, *, trigger: str = "HAND", project_key: str | None = None, baseline: bool = False,
-        now: datetime | None = None, github_factory: GitHubFactory = default_github) -> Outcome:
+        now: datetime | None = None, github_factory: GitHubFactory = default_github, model_call=None) -> Outcome:
     now = now or datetime.now(UTC)
     try:
         with exclusive(config.data_dir / "run.lock", f"run ({trigger.lower()})"):
             conn = db.open_store(config.db_path)
             try:
-                return _run(conn, config, trigger, project_key, baseline, now, github_factory)
+                return _run(conn, config, trigger, project_key, baseline, now, github_factory, model_call or provider.call)
             finally:
                 conn.close()
     except Busy as exc:
         return Outcome(None, "REFUSED", str(exc))
 
 
-def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> Outcome:
+def _run(conn, config, trigger, project_key, baseline, now, github_factory, model_call) -> Outcome:
     tz = tz_of(conn)
     local_now = now.astimezone(tz)
     today = local_now.date()
@@ -82,25 +81,32 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
         return Outcome(None, "REFUSED", f"no active project {project_key}")
     prev = R.current_snapshot(conn)
     prev_id = prev["id"] if prev else None
-    since = datetime.fromisoformat(prev["created_at"].replace("Z", "+00:00")) if prev and not baseline else None
+    scheduled_prev = digest.previous_scheduled(conn) if trigger == "SCHEDULE" else None
+    fetch_prev = scheduled_prev or prev
+    since = datetime.fromisoformat(fetch_prev["created_at"]) if fetch_prev and not baseline else None
     run_id = R.start_run(conn, trigger, project_key or "", baseline or prev is None, now)
     snap = R.new_snapshot(conn, run_id, now)
     work = config.data_dir / "runs" / str(run_id)
-    token = read_token(config.data_dir / "secrets" / "github-token")
     problems: list[str] = []
 
     def log_request(method, host, path, status):
         R.log_request(conn, run_id=run_id, onboarding_id=None, method=method, host=host, path=path, status=status)
 
     linked = read_any = failed_any = False
+    published = False
     try:
+        model_budget = assessment.ModelBudget(conn, config, model_call, baseline or prev is None)
+        token = read_token(config.data_dir / "secrets" / "github-token")
+        if project_key and prev_id:
+            R.carry_unselected(conn, prev_id, snap, projects[0]["id"])
         for p in projects:
             holidays = {date.fromisoformat(d) for d in R.holidays(conn, p["id"])}
             sources = R.sources(conn, p["id"])
             linked = linked or bool(sources)
             result = Result()
             newest_commit = ""
-            read_sources: dict[int, tuple[str, Path]] = {}
+            read_sources: dict[int, assessment.Source] = {}
+            project_unread = False
             for s in sources:
                 try:
                     mirror = config.data_dir / "mirrors" / f"{s['id']}.git"
@@ -109,6 +115,7 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
                     first_sha = ""
                     for branch in names:
                         if not git.branch_exists(mirror, branch):
+                            project_unread = True
                             R.add_source_read(conn, run_id=run_id, source_id=s["id"], branch=branch, ok=False, error="branch not found")
                             R.add_problem(conn, run_id=run_id, project_id=p["id"], stage="ST-1", adapter="git", reason=f"{s['key']}: branch {branch} not found")
                             continue
@@ -118,7 +125,7 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
                         R.add_source_read(conn, run_id=run_id, source_id=s["id"], branch=branch, sha=sha, date=when, ok=True)
                     if not first_sha:
                         raise git.GitError("no readable branch")
-                    checkout = work / "checkout" / s["key"]
+                    checkout = work / "checkout" / str(p["id"]) / s["key"]
                     if s["role"] == "DOCS":
                         paths = ["aidlc-docs"]
                         if p["wbs_source_id"] == s["id"] and p["wbs_path"]:
@@ -128,20 +135,34 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
                         git.export(mirror, first_sha, checkout, paths)
                     elif (p["wbs_source_id"] == s["id"] and p["wbs_path"]) or (p["dashboard_source_id"] == s["id"] and p["dashboard_json_path"]):
                         git.export(mirror, first_sha, checkout, [x for x in (p["wbs_path"], p["dashboard_json_path"]) if x])
-                    read_sources[s["id"]] = (first_sha, checkout)
-                    read_any = True
+                    github_dir = work / "github" / str(p["id"]) / s["key"]
+                    github_read = False
                     if s["github_repo"]:
-                        if token:
-                            client = github_factory(token, log_request)
+                        try:
+                            if not token:
+                                raise GitHubError("no GitHub token, so PRs, reviews and issues were not read")
+                            with_github = github_factory(token, log_request)
                             try:
-                                fetch_repo(client, s["github_repo"], work / "github" / s["key"], since=since)
+                                marker = assessment.previous_read(conn, prev_id, s["id"])
+                                read_at = marker["read_at"] if marker else ""
+                                github_since = min(since, datetime.fromisoformat(read_at)) if since and read_at else since
+                                fetch_repo(with_github, s["github_repo"], github_dir, since=github_since)
+                                github_read = True
                             finally:
-                                client.close()
-                        else:
+                                with_github.close()
+                        except (GitHubError, OSError) as exc:
+                            failed_any = True
+                            project_unread = True
+                            problems.append(f"{p['key']}/{s['key']}: {exc}")
                             R.add_problem(conn, run_id=run_id, project_id=p["id"], stage="ST-1", adapter="github",
-                                          reason=f"{s['key']}: no GitHub token, so PRs, reviews and issues were not read")
+                                          reason=f"{s['key']}: {exc}")
+                            if prev_id:
+                                R.carry_over(conn, prev_id, snap, p["id"], s["id"], github_only=True)
+                    read_sources[s["id"]] = assessment.Source(s["id"], first_sha, checkout, mirror, github_dir, github_read)
+                    read_any = True
                 except (git.GitError, GitHubError, OSError) as exc:
                     failed_any = True
+                    project_unread = True
                     R.add_source_read(conn, run_id=run_id, source_id=s["id"], branch="", ok=False, error=str(exc))
                     R.add_problem(conn, run_id=run_id, project_id=p["id"], stage="ST-1", adapter="git", reason=f"{s['key']}: {exc}")
                     problems.append(f"{p['key']}/{s['key']}: {exc}")
@@ -155,7 +176,8 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
             for s in sources:
                 if s["id"] not in read_sources:
                     continue
-                sha, checkout = read_sources[s["id"]]
+                read = read_sources[s["id"]]
+                sha, checkout = read.commit, read.checkout
                 if s["role"] == "DOCS" and aidlc.probe(checkout):
                     result.merge(aidlc.extract(checkout, source_id=s["id"], commit=sha, project_id=p["id"], snapshot_id=snap))
                 if p["dashboard_source_id"] == s["id"] and p["dashboard_json_path"]:
@@ -165,8 +187,9 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
                 if p["wbs_source_id"] == s["id"] and p["wbs_path"]:
                     result.merge(wbs.extract(checkout, p["wbs_path"], p["wbs_mapping"], source_id=s["id"], commit=sha,
                                              project_id=p["id"], snapshot_id=snap, gate_keys=gate_keys))
-                result.merge(gh_adapter.extract(work / "github" / s["key"], source_id=s["id"], project_id=p["id"], snapshot_id=snap,
-                                                branch_pattern=p["branch_unit_pattern"], task_key_pattern=p["task_key_pattern"]))
+                if read.github_read:
+                    result.merge(gh_adapter.extract(read.github, source_id=s["id"], project_id=p["id"], snapshot_id=snap,
+                                                    branch_pattern=p["branch_unit_pattern"], task_key_pattern=p["task_key_pattern"]))
             _match_people(conn, result, snap, p["id"])
             _carry_requested_at(conn, result, prev_id, p["id"])
             for table in ("unit_state", "unit_stage_state", "task_state", "pr_state", "review_state", "issue_state", "fact", "unmatched_name"):
@@ -176,16 +199,46 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory) -> O
 
             # ---------------------------------------------------------------- ST-3 Compare
             _compare(conn, p, snap, prev_id, today, holidays, dashboard_updated, newest_commit)
+            if p["prose_reading"] and read_sources:
+                if not assessment.read(conn, run_id, snap, prev_id, p, read_sources.values(), work, baseline, now, model_budget):
+                    failed_any = True
+                    problems.append(f"{p['key']}: some project prose could not be read")
+            assessment.stated_blockers(conn, snap, prev_id, p["id"], today, holidays)
+            if not assessment.propose(conn, run_id, snap, p, today, holidays, project_unread, work, model_budget):
+                failed_any = True
+                problems.append(f"{p['key']}: some health proposals use rules only after a model problem")
 
         if linked and not read_any:  # §10-8: no source of any linked project could be read
             R.end_run(conn, run_id, "FAILED", "no source could be read: " + "; ".join(problems)[:1500])
             return Outcome(run_id, "FAILED", "no source could be read", problems=problems)
-        R.publish(conn, snap)
+        changes = digest.changes(conn, snap, prev, projects, hand_through=R.stamp(now))
+        R.insert_many(conn, "change", changes)
+        digest_text = None
+        if trigger == "SCHEDULE":
+            daily_changes = changes if scheduled_prev is None or scheduled_prev["id"] == prev_id else digest.changes(
+                conn, snap, scheduled_prev, projects, hand_through=R.stamp(now))
+            digest_text, cards = digest.build(conn, run_id, snap, projects, today, daily_changes, local_now)
         result_word = "PARTIAL" if failed_any else "OK"
-        R.end_run(conn, run_id, result_word)
+        with db.transaction(conn):
+            if digest_text is not None:
+                R.insert(conn, "digest", {"snapshot_id": snap, "day": today.isoformat(), "text": digest_text,
+                                          "cards": json.dumps(cards), "changes": json.dumps(daily_changes)})
+            R.publish(conn, snap)
+            R.end_run(conn, run_id, result_word, **R.model_totals(conn, run_id))
+        published = True
+        if digest_text is not None:
+            try:
+                folder = config.data_dir / "digests"
+                folder.mkdir(mode=0o700, exist_ok=True)
+                temp = folder / f".{today}.{run_id}.tmp"
+                temp.write_text(digest_text, encoding="utf-8")
+                temp.replace(folder / f"{today}.txt")
+            except OSError:
+                R.add_problem(conn, run_id=run_id, stage="ST-8", adapter="digest", reason="Could not write the digest file. The digest is available on Changes.")
         return Outcome(run_id, result_word, snapshot_id=snap, problems=problems)
     except Exception as exc:  # noqa: BLE001 - a run that dies must still show on V-7 (§10-1)
-        R.end_run(conn, run_id, "FAILED", f"{exc.__class__.__name__}: {exc}")
+        if not published:
+            R.end_run(conn, run_id, "FAILED", f"{exc.__class__.__name__}: {exc}", **R.model_totals(conn, run_id))
         raise
     finally:
         _prune_work(config.data_dir / "runs", keep_days=14)
@@ -231,6 +284,17 @@ def _compare(conn, p, snap: int, prev_id: int | None, today: date, holidays: set
     # R-D1: the unit's stage from its folders against the stage the dashboard file names.
     order = [s.key for s in aidlc.STAGES]
     facts = []
+    for row in [*rows["pr_state"], *found]:
+        if not (row.get("src_path") or row.get("src_url")):
+            continue
+        kind = row.get("subject_type", "PR")
+        key = row.get("subject_key", str(row.get("number", "")))
+        if kind == "PR":
+            key = f"{row['src_source_id']}#{key}"
+        facts.append({"snapshot_id": snap, "project_id": pid, "subject_type": kind, "subject_key": key,
+                      "kind": "blocker.program" if "detail" in row else "pr.status",
+                      "value": json.dumps({"text": row.get("detail") or row.get("title", ""), "state": row.get("state", "")}),
+                      **{k: row.get(k) for k in R.SRC_COLUMNS}})
     for u in rows["unit_state"]:
         by_folder = compare.current_stage_by_artifacts(u["unit"], rows["unit_stage_state"], order)
         named = aidlc.stage_of_text(f"{u['status']} {u['stage']}")

@@ -250,13 +250,15 @@ def record_outcome(
 
 # ---------------------------------------------------------------- confirmations
 
-def add_confirmation(conn: sqlite3.Connection, gate_id: int, value: object, note: object = "") -> int:
+def add_confirmation(conn: sqlite3.Connection, gate_id: int, value: object, note: object = "", *,
+                     proposal_id: int | None = None) -> int:
     """R-C1: only a user action creates a confirmation. Rows are never changed."""
     health = _choice(value, HEALTH_VALUES, "Health")
     note_text = _text(note, "Note", max_len=1000)
     with transaction(conn):
         cid = conn.execute(
-            "INSERT INTO confirmation(gate_id, value, note) VALUES (?, ?, ?)", (gate_id, health, note_text)
+            "INSERT INTO confirmation(gate_id, value, note, answered_proposal_id) VALUES (?, ?, ?, ?)",
+            (gate_id, health, note_text, proposal_id)
         ).lastrowid
     return int(cid)
 

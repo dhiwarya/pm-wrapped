@@ -6,6 +6,7 @@ tables only, then redirects back with a short message.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -49,7 +50,7 @@ templates.env.globals.update(
     SOURCE_ROLES=hand.SOURCE_ROLES,
     json_pretty=present.json_pretty,
 )
-templates.env.filters["fromjson"] = __import__("json").loads
+templates.env.filters["fromjson"] = json.loads
 
 
 def default_spawner(config: Config, config_path: Path | None) -> Callable[[list[str]], None]:
@@ -95,9 +96,11 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
     app.add_middleware(GuardMiddleware, config=config)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
-    def get_conn() -> Iterator[sqlite3.Connection]:
+    def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
         conn = db.connect(config.db_path)
         try:
+            if request.method in ("GET", "HEAD"):
+                conn.execute("BEGIN")
             yield conn
         finally:
             conn.close()
@@ -150,6 +153,56 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
     def today_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
         return render(request, "today.html", present.build_today(conn, app.state.now()), nav="today", conn=conn)
 
+    @app.get("/changes", response_class=HTMLResponse)
+    @app.get("/changes/{day}", response_class=HTMLResponse)
+    def changes_view(request: Request, day: str | None = None, conn: sqlite3.Connection = Depends(get_conn)):
+        digest = views.digest(conn, day)
+        if day and digest is None:
+            raise StarletteHTTPException(status_code=404)
+        snapshot = views.current_snapshot(conn)
+        snapshot_id = snapshot["id"] if snapshot else None
+        repos = present.repos_of(conn)
+        names = {p["id"]: p["name"] for p in conn.execute("SELECT id, name FROM project")}
+        rows = json.loads(digest["changes"]) if day else [dict(row) for row in views.changes(conn, snapshot_id)]
+        changes = [dict(row, project=names.get(row["project_id"]) or "Dashboard", project_group=row["project_id"] or 0,
+                        src=present.src_link(json.loads(row.get("source", "{}")), repos)) for row in rows]
+        return render(request, "changes.html", {"digest": digest, "days": views.digest_days(conn), "changes": changes,
+                                                  "historical": bool(day)}, nav="changes", conn=conn)
+
+    @app.get("/story", response_class=HTMLResponse)
+    @app.get("/story/{day}", response_class=HTMLResponse)
+    def story_view(request: Request, day: str | None = None, slide: int = 0, conn: sqlite3.Connection = Depends(get_conn)):
+        digest = views.digest(conn, day)
+        if digest is None:
+            if not day:
+                return RedirectResponse("/changes", status_code=303)
+            raise StarletteHTTPException(status_code=404)
+        cards = json.loads(digest["cards"])
+        decision_ids = [card["gate_id"] for card in cards if card["kind"] == "DECISION"]
+        confs = hand.latest_confirmations(conn, decision_ids)
+        snap = views.current_snapshot(conn)
+        latest = views.health_proposals(conn, snap["id"] if snap else None)
+        for card in cards:
+            if card["kind"] != "DECISION":
+                continue
+            gid = card["gate_id"]
+            gate = conn.execute("SELECT outcome, closed_at FROM gate WHERE id = ?", (gid,)).fetchone()
+            conf = confs.get(gid)
+            proposal = latest.get(gid)
+            card["live_confirmation"] = present.STATUS[conf["value"]]["word"] if conf else ""
+            card["can_confirm"] = bool(gate and not gate["outcome"] and gate["closed_at"] is None and proposal
+                                       and proposal["value"] == card["value"] and (not conf or conf["value"] != card["value"]))
+        return render(request, "story.html", {"digest": digest, "cards": cards, "slide": max(0, min(slide, len(cards) - 1))},
+                      nav="today", conn=conn)
+
+    @app.get("/facts/{fid}", response_class=HTMLResponse)
+    def fact_view(request: Request, fid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        fact = views.fact(conn, fid)
+        if fact is None:
+            raise StarletteHTTPException(status_code=404)
+        return render(request, "fact.html", {"fact": fact, "value": json.loads(fact["value"]),
+                                              "src": present.src_link(fact, present.repos_of(conn))}, conn=conn)
+
     @app.get("/health", response_class=PlainTextResponse)
     def health(conn: sqlite3.Connection = Depends(get_conn)):
         last = views.last_run(conn)
@@ -181,6 +234,12 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
             "run_time": hand.get_setting(conn, "run_time", "07:00"),
             "review_wait_days": hand.get_setting(conn, "review_wait_days", "2"),
             "stale_input_days": hand.get_setting(conn, "stale_input_days", "3"),
+            "owner_person_id": hand.get_setting(conn, "owner_person_id", ""),
+            "evidence_risk_days": hand.get_setting(conn, "evidence_risk_days", "5"),
+            "blocker_risk_days": hand.get_setting(conn, "blocker_risk_days", "3"),
+            "model_timeout_s": hand.get_setting(conn, "model_timeout_s", "600"),
+            "model_budget_usd": hand.get_setting(conn, "model_budget_usd", "2.00"),
+            "baseline_model_budget_usd": hand.get_setting(conn, "baseline_model_budget_usd", "3.00"),
             "unmatched": views.unmatched_names(conn, (views.current_snapshot(conn) or {"id": None})["id"]),
             "aliases": conn.execute("SELECT a.*, p.display_name FROM person_alias a JOIN person p ON p.id = a.person_id ORDER BY p.display_name, a.kind").fetchall(),
         }
@@ -307,8 +366,25 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         project = project_or_404(conn, key)
 
         def do(f):
-            hand.get_gate(conn, project["id"], gid)
-            hand.add_confirmation(conn, gid, f.get("value"), f.get("note"))
+            with db.transaction(conn):
+                gate = hand.get_gate(conn, project["id"], gid)
+                if gate["outcome"] or gate["closed_at"]:
+                    raise InputError("This gate is closed or already has an outcome.")
+                proposal_id = None
+                value = f.get("value")
+                if f.get("proposal_id"):
+                    try:
+                        proposal_id = int(f["proposal_id"])
+                    except ValueError:
+                        raise InputError("Invalid gate proposal.") from None
+                    proposal = views.health_proposal(conn, proposal_id, gid)
+                    snap = views.current_snapshot(conn)
+                    latest = views.health_proposals(conn, snap["id"] if snap else None).get(gid)
+                    if not proposal or not latest or proposal["value"] != latest["value"]:
+                        raise InputError("The gate proposal has changed. Review the current proposal on Today.")
+                    if f.get("confirm") == "1":
+                        value = proposal["value"]
+                hand.add_confirmation(conn, gid, value, f.get("note"), proposal_id=proposal_id)
             return "Health saved as your confirmed value."
 
         return await act(request, f"/p/{key}?tab=gates#g-{gid}", do)
@@ -499,7 +575,8 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
                 secs = int((present.local_stamp(r["ended_at"], tz) - present.local_stamp(r["started_at"], tz)).total_seconds())
                 took = f"{secs // 60} min {secs % 60:02d} s" if secs >= 60 else f"{secs} s"
             rows.append({"row": r, "when": present.when_text(r["started_at"], tz, now_), "took": took, "sources": srcs[r["id"]],
-                         "problems": probs[r["id"]], "counts": views.run_counts(conn, r["id"]), "look": present.RUN_RESULT[r["result"]]})
+                         "problems": probs[r["id"]], "counts": views.run_counts(conn, r["id"]), "look": present.RUN_RESULT[r["result"]],
+                         "model_reads": views.model_reads(conn, r["id"])})
         projects = hand.list_projects(conn)
         return render(request, "runs.html", {"rows": rows, "projects": projects}, nav="runs", conn=conn)
 
@@ -614,13 +691,23 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
             run_time = str(f.get("run_time", "07:00")).strip()
             if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", run_time):
                 raise InputError("Run time must be like 07:00.")
-            wait = str(f.get("review_wait_days", "2")).strip()
-            stale = str(f.get("stale_input_days", "3")).strip()
-            if not (wait.isdigit() and stale.isdigit() and 0 < int(wait) < 60 and 0 < int(stale) < 60):
+            values = {name: str(f.get(name, hand.get_setting(conn, name, default))).strip() for name, default in (
+                ("review_wait_days", "2"), ("stale_input_days", "3"), ("evidence_risk_days", "5"), ("blocker_risk_days", "3"))}
+            if not all(value.isascii() and value.isdigit() and len(value) <= 2 and 0 < int(value) < 60 for value in values.values()):
                 raise InputError("The thresholds are whole numbers of working days, 1 to 59.")
-            hand.set_setting(conn, "run_time", run_time)
-            hand.set_setting(conn, "review_wait_days", wait)
-            hand.set_setting(conn, "stale_input_days", stale)
+            owner = str(f.get("owner_person_id", hand.get_setting(conn, "owner_person_id", "")))
+            if owner and owner not in {str(person["id"]) for person in hand.list_people(conn)}:
+                raise InputError("Choose a person from the dashboard.")
+            timeout = str(f.get("model_timeout_s", hand.get_setting(conn, "model_timeout_s", "600"))).strip()
+            if not _re.fullmatch(r"[0-9]{1,4}", timeout) or not 1 <= int(timeout) <= 1800:
+                raise InputError("Enter a model time limit from 1 to 1800 seconds.")
+            budgets = {name: str(f.get(name, hand.get_setting(conn, name, default))).strip() for name, default in (
+                ("model_budget_usd", "2.00"), ("baseline_model_budget_usd", "3.00"))}
+            if not all(_re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,2})?", value) and 0.01 <= float(value) <= 100 for value in budgets.values()):
+                raise InputError("Enter Claude budgets from $0.01 to $100.00.")
+            with db.transaction(conn):
+                for name, value in {**values, **budgets, "model_timeout_s": timeout, "run_time": run_time, "owner_person_id": owner}.items():
+                    hand.set_setting(conn, name, value)
             return "Run settings saved. The timer itself is set where PM Dash is installed."
 
         return await act(request, "/settings", do)

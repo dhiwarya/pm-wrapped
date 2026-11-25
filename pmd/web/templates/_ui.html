@@ -35,6 +35,7 @@
     <header><h2 id="health-title-{{ gate.id }}">Health of {{ gate.key }}</h2><button class="btn" type="button" data-close>Close</button></header>
     <p class="muted">What you save here is your judgment. It is kept with the date, and a run never changes it.</p>
     <input type="hidden" name="back" value="{{ back }}">
+    {% if gate.proposal %}<input type="hidden" name="proposal_id" value="{{ gate.proposal.id }}">{% endif %}
     <div class="field"><label for="hv-{{ gate.id }}">Value</label>
       <select id="hv-{{ gate.id }}" name="value" required>
         {% for v in ("ON_TRACK", "AT_RISK", "LATE") %}<option value="{{ v }}" {% if gate.health == v %}selected{% endif %}>{{ STATUS[v].icon }} {{ STATUS[v].word }}</option>{% endfor %}
@@ -44,6 +45,24 @@
     <div class="row-end"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" type="submit">Save as confirmed</button></div>
   </form>
 </dialog>
+{%- endmacro %}
+
+{% macro proposal_health(project_key, gate, back) -%}
+  <div class="eyebrow">{% if gate.needs_call %}Proposed by PM Dash{% else %}Confirmed{% endif %}</div>
+  <div class="row">{{ sticker(gate.status, big=True) }}{% if gate.proposal.produced_by == 'RULES' %}<span class="own">Rules only</span>{% endif %}</div>
+  {% if gate.confirmation %}
+    <p class="was">Confirmed {{ STATUS[gate.confirmation.value].word|lower }} · {{ gate.confirmed_on }}{% if gate.confirmation.note %} · {{ gate.confirmation.note }}{% endif %}</p>
+  {% endif %}
+  <ul class="health-reasons">{% for reason in gate.proposal.reasons %}<li>{{ reason.text }}
+    {% for fid in reason.facts %}<a class="src" href="/facts/{{ fid }}">Source {{ loop.index }}</a>{% endfor %}</li>{% endfor %}</ul>
+  <div class="row">
+    {% if gate.needs_call and gate.proposal.value != 'UNKNOWN' %}
+    <form method="post" action="/p/{{ project_key }}/gates/{{ gate.id }}/health">
+      <input type="hidden" name="back" value="{{ back }}"><input type="hidden" name="proposal_id" value="{{ gate.proposal.id }}">
+      <button class="pill" type="submit" name="confirm" value="1">Confirm proposal</button>
+    </form>{% endif %}
+    <button class="pill ghost" type="button" data-open="health-{{ gate.id }}">{{ 'Override' if gate.needs_call else 'Change' }}</button>
+  </div>
 {%- endmacro %}
 
 {# Where a fact was read (P-3): a link when the source is on GitHub, else the path and commit. #}

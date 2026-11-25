@@ -83,6 +83,42 @@ def item_states(conn: sqlite3.Connection, snapshot_id: int | None) -> dict[int, 
     return {r["evidence_item_id"]: r for r in conn.execute("SELECT * FROM item_state WHERE snapshot_id = ?", (snapshot_id,))}
 
 
+def health_proposals(conn, snapshot_id):
+    return {r["gate_id"]: r for r in conn.execute("SELECT * FROM proposal WHERE snapshot_id = ?", (snapshot_id,))}
+
+
+def health_proposal(conn, proposal_id, gate_id):
+    return conn.execute("SELECT p.* FROM proposal p JOIN snapshot s ON s.id = p.snapshot_id "
+                        "WHERE p.id = ? AND p.gate_id = ? AND s.published_at IS NOT NULL", (proposal_id, gate_id)).fetchone()
+
+
+def fact(conn, fact_id):
+    return conn.execute("SELECT f.* FROM fact f JOIN snapshot s ON s.id = f.snapshot_id "
+                        "WHERE f.id = ? AND s.published_at IS NOT NULL", (fact_id,)).fetchone()
+
+
+def digest(conn, day=None):
+    query = "SELECT d.* FROM digest d JOIN snapshot s ON s.id = d.snapshot_id WHERE s.published_at IS NOT NULL"
+    if day:
+        return conn.execute(query + " AND d.day = ?", (day,)).fetchone()
+    return conn.execute(query + " ORDER BY d.day DESC LIMIT 1").fetchone()
+
+
+def digest_days(conn):
+    return [r[0] for r in conn.execute("SELECT d.day FROM digest d JOIN snapshot s ON s.id = d.snapshot_id "
+                                      "WHERE s.published_at IS NOT NULL ORDER BY d.day DESC")]
+
+
+def changes(conn, snapshot_id):
+    return conn.execute("SELECT c.*, p.name AS project FROM change c LEFT JOIN project p ON p.id = c.project_id "
+                        "WHERE c.snapshot_id = ? ORDER BY p.name, c.id", (snapshot_id,)).fetchall()
+
+
+def model_reads(conn, run_id):
+    return conn.execute("SELECT m.*, p.key AS project FROM model_read m LEFT JOIN project p ON p.id = m.project_id "
+                        "WHERE m.run_id = ? ORDER BY m.id", (run_id,)).fetchall()
+
+
 def last_source_reads(conn: sqlite3.Connection, project_id: int) -> dict[int, sqlite3.Row]:
     rows = conn.execute(
         "SELECT rs.* FROM run_source rs JOIN source s ON s.id = rs.source_id WHERE s.project_id = ? AND rs.run_id IS NOT NULL "

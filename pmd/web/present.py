@@ -10,10 +10,12 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from html import escape
+from urllib.parse import quote as url_quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..adapters.aidlc import STAGES
 from ..data import hand, views
+from ..rules.changes import highlights
 from ..rules.gates import need_call_count, split_next_gate, task_days_late
 from ..rules.workdays import working_days_left, working_days_past
 
@@ -117,7 +119,7 @@ def src_link(row, repos: dict[int, str]) -> dict:
     line_to = row["src_line_to"] if "src_line_to" in keys else None
     commit = row["src_commit"] if "src_commit" in keys else ""
     if url:
-        label = f"{row['src_object']} {row['src_number']}" if row["src_object"] else "source"
+        label = f"{row['src_object']} {row['src_number']}" if "src_object" in keys and row["src_object"] else "source"
         return {"url": url if url.startswith("https://") else "", "label": label}
     if not path:
         return {"url": "", "label": ""}
@@ -125,7 +127,7 @@ def src_link(row, repos: dict[int, str]) -> dict:
     repo = repos.get(row["src_source_id"]) if "src_source_id" in keys else None
     if repo and commit and not path.startswith("("):
         anchor = f"#L{line}" + (f"-L{line_to}" if line_to and line_to != line else "") if line else ""
-        return {"url": f"https://github.com/{repo}/blob/{commit}/{path}{anchor}", "label": label}
+        return {"url": f"https://github.com/{repo}/blob/{commit}/{url_quote(path)}{anchor}", "label": label}
     return {"url": "", "label": label + (f" @ {commit[:7]}" if commit else "")}
 
 
@@ -222,9 +224,19 @@ def gate_view(gate: sqlite3.Row, today_: date, holidays: set[date], confirmation
     }
 
 
+def gate_proposal(view, proposal):
+    if not proposal or view["outcome"]:
+        return view
+    view["proposal"] = dict(proposal, status=STATUS[proposal["value"]], reasons=json.loads(proposal["reasons"]))
+    view["needs_call"] = not view["confirmation"] or view["confirmation"]["value"] != proposal["value"]
+    view["status"] = STATUS[proposal["value"]] if view["needs_call"] else view["status"]
+    return view
+
+
 def blocker_view(b: sqlite3.Row, repos: dict[int, str]) -> dict:
     age = f"{b['age_days']}d" if b["age_days"] else "!"
     return {"row": b, "age": age, "word": BLOCKER_WORD.get(b["kind"], b["kind"]), "detail": b["detail"], "who": b["person_raw"],
+            "model": b["kind"] == "STATED",
             "src": src_link(b, repos)}
 
 
@@ -236,7 +248,12 @@ def build_today(conn: sqlite3.Connection, now: datetime) -> dict:
     snap = views.current_snapshot(conn)
     snap_id = snap["id"] if snap else None
     states = views.item_states(conn, snap_id)
+    proposals = views.health_proposals(conn, snap_id)
+    confirmations = hand.latest_confirmations(conn, list(proposals))
     repos = repos_of(conn)
+    changes = {}
+    for row in views.changes(conn, snap_id):
+        changes.setdefault(row["project_id"], []).append(row)
     blocks = []
     open_ids: list[int] = []
     for p in hand.list_projects(conn):
@@ -253,19 +270,22 @@ def build_today(conn: sqlite3.Connection, now: datetime) -> dict:
             "evidence": None, "sources": len(sources), "aidlc": aidlc,
             "blockers": [blocker_view(b, repos) for b in blockers[:4]], "blocker_count": len(blockers),
             "open_proposals": views.open_proposal_count(conn, p["id"]) if sources else 0,
+            "changes": {label: len(items) for label, items in highlights(changes[p["id"]]).items()} if p["id"] in changes else {},
+            "num_changes": len(changes.get(p["id"], [])),
         }
         if nxt is not None:
             conf = hand.latest_confirmations(conn, [nxt["id"]]).get(nxt["id"])
-            block["next"] = gate_view(nxt, day, holidays, conf, tz)
+            block["next"] = gate_proposal(gate_view(nxt, day, holidays, conf, tz), proposals.get(nxt["id"]))
             items = hand.list_items(conn, [nxt["id"]])[nxt["id"]]
             block["evidence"] = summarise([item_state(i, states.get(i["id"])) for i in items])
         blocks.append(block)
     blocks.sort(key=lambda b: (b["next"] is None, b["next"]["date"] if b["next"] else "", b["project"]["name"].lower()))
-    need = need_call_count(open_ids, proposals={}, confirmations={})  # proposals arrive in Phase 3 (R-V1)
+    need = need_call_count(open_ids, {i: p["value"] for i, p in proposals.items()}, {i: c["value"] for i, c in confirmations.items()})
     problems = conn.execute("SELECT count(*) FROM run_problem WHERE run_id = ?", (snap["run_id"],)).fetchone()[0] if snap else 0
     read = conn.execute("SELECT count(DISTINCT source_id) FROM run_source WHERE run_id = ? AND ok = 1", (snap["run_id"],)).fetchone()[0] if snap else 0
     return {"day": day, "day_text": full_date(day), "blocks": blocks, "need": need, "count": len(blocks), "snapshot": snap,
-            "snap_when": when_text(snap["created_at"], tz, now) if snap else "", "sources_read": read, "problems": problems}
+            "snap_when": when_text(snap["created_at"], tz, now) if snap else "", "sources_read": read, "problems": problems,
+            "digest": views.digest(conn), "prose_failed": bool(snap and any(r["stage"] == "ST-4" and r["error"] for r in views.model_reads(conn, snap["run_id"])))}
 
 
 # ---------------------------------------------------------------- V-5 Project
@@ -281,9 +301,10 @@ def build_project(conn: sqlite3.Connection, project: sqlite3.Row, now: datetime)
     links = hand.list_links(conn, [i["id"] for its in items.values() for i in its])
     snap = views.current_snapshot(conn)
     states = views.item_states(conn, snap["id"] if snap else None)
+    proposals = views.health_proposals(conn, snap["id"] if snap else None)
     gate_views = []
     for g in gates:
-        view = gate_view(g, day, holidays, confs.get(g["id"]), tz)
+        view = gate_proposal(gate_view(g, day, holidays, confs.get(g["id"]), tz), proposals.get(g["id"]))
         view["items"] = []
         for i in items[g["id"]]:
             state = item_state(i, states.get(i["id"]))

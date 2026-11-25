@@ -46,6 +46,11 @@ RUN_TABLES = (
     "item_state",
     "unmatched_name",
     "onboarding_proposal",
+    "proposal",
+    "change",
+    "digest",
+    "model_read",
+    "model_source",
 )
 
 
@@ -115,6 +120,8 @@ def migrate(conn: sqlite3.Connection) -> list[int]:
         except sqlite3.Error:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
+            if conn.execute("SELECT 1 FROM schema_version WHERE version = ?", (version,)).fetchone():
+                continue  # another process finished this migration while we waited
             raise
         applied.append(version)
     with transaction(conn):

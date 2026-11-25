@@ -3,17 +3,35 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from pmd.config import Config
 from pmd.data import db, hand
+from pmd.model import judge, provider, reader
+from pmd.model.cli import CliResult
 from pmd.web.app import create_app
 
 # Tuesday 24 November 2026, 09:00 UTC.
 NOW = datetime(2026, 11, 24, 9, 0, tzinfo=UTC)
 ORIGIN = "http://testserver"
+
+
+@pytest.fixture(autouse=True)
+def model_without_network(monkeypatch):
+    def answer(prompt, schema, **kwargs):
+        if schema == reader.SCHEMA:
+            return CliResult({"facts": [], "not_read": []})
+        if schema == judge.SCHEMA:
+            gates = json.loads(prompt.split("\n", 1)[1])
+            return CliResult({"proposals": [{"gate_id": g["gate_id"], "value": g["floor"],
+                              "reasons": [{"text": "Supporting fact", "facts": [g["facts"][0]["id"]]}]}
+                             for g in gates]})
+        raise AssertionError("Test must explicitly provide its model response")
+
+    monkeypatch.setattr(provider, "call", answer)
 
 
 @pytest.fixture

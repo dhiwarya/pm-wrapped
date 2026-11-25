@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% from '_ui.html' import sticker %}
+{% block title %}Weekday story · pm·dash{% endblock %}
+{% block main %}
+<p><a href="/changes/{{ digest.day }}">Read the full digest</a></p>
+<dialog class="story-player" aria-labelledby="story-title" data-story data-slide="{{ slide }}">
+  <header class="story-toolbar">
+    <h1 id="story-title">{{ short_date(digest.day) }} story</h1>
+    <button type="button" class="btn" data-story-pause aria-pressed="false">Pause</button>
+    <a class="btn" href="/" aria-label="Close story">Close</a>
+  </header>
+  <div class="story-progress" aria-hidden="true">{% for card in cards %}<span data-story-bar><i></i></span>{% endfor %}</div>
+  <div class="story-count" data-story-count aria-live="polite"></div>
+  {% for card in cards %}
+  <section class="tile story-card {{ {'OPENING':'t-lime', 'DAYS':'t-violet', 'DECISION':'t-butter', 'CHANGES':'t-blue', 'WAITING':'t-pink', 'PROJECT':'t-mint', 'MORE':'t-tangerine', 'CLOSING':'t-night'}[card.kind] }}" data-story-card {% if loop.index0 != slide %}hidden{% endif %}>
+    {% if card.hero is defined %}<div class="n sm" aria-hidden="true">{{ card.hero }}</div>{% endif %}
+    <h2>{{ card.title }}</h2>
+    {% if card.kind == 'DECISION' %}{{ sticker(STATUS[card.value], big=True) }}{% endif %}
+    {% for line in card.lines %}<p>{{ line }}</p>{% endfor %}
+    {% if card.live_confirmation %}<p>Currently confirmed {{ card.live_confirmation|lower }}.</p>{% endif %}
+    {% if card.can_confirm %}
+    <div class="row">
+      <form method="post" action="/p/{{ card.project_key }}/gates/{{ card.gate_id }}/health">
+        <input type="hidden" name="proposal_id" value="{{ card.proposal_id }}">
+        <input type="hidden" name="back" value="/story/{{ digest.day }}?slide={{ loop.index }}">
+        <button class="pill" type="submit" name="confirm" value="1">Confirm</button>
+      </form>
+      <button type="button" class="pill ghost" data-story-next>Decide later</button>
+    </div>
+    {% endif %}
+    {% if card.kind == 'CLOSING' %}<a class="pill" href="/">Open the dashboard</a>{% endif %}
+  </section>
+  {% endfor %}
+  <footer class="story-toolbar"><button type="button" class="btn" data-story-prev>Previous</button><button type="button" class="btn" data-story-next>Next</button></footer>
+</dialog>
+<script src="/static/story.js?v={{ version }}" defer></script>
+{% endblock %}

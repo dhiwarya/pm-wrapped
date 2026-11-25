@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_ui.html" import sticker, badge, blob, segbar, health_dialog, srclink %}
+{% from "_ui.html" import sticker, badge, blob, segbar, health_dialog, proposal_health, srclink %}
 {% set p = project %}
 {% block title %}{{ p.name }} · pm·dash{% endblock %}
 {% block main %}
@@ -90,8 +90,8 @@
         {% if g.is_past %}{{ g.past }} {{ plural(g.past, "working day") }} past{% else %}{{ g.left }} {{ plural(g.left, "working day") }} left{% endif %}</div>
     </div>
     <div class="gate-status">
-      {% if g.outcome %}{{ sticker(g.outcome) }}{% else %}{{ sticker(g.status) }}{% if g.confirmation %}<span class="muted small">set {{ g.confirmed_on }}</span>{% endif %}{% endif %}
-      {% if not g.outcome %}<button class="btn" type="button" data-open="health-{{ g.id }}">{{ "Change health" if g.confirmation else "Set health" }}</button>{% endif %}
+      {% if g.outcome %}{{ sticker(g.outcome) }}{% else %}{{ sticker(g.status) }}{% if g.needs_call %}<span class="muted small">Proposed</span>{% elif g.confirmation %}<span class="muted small">Confirmed {{ g.confirmed_on }}</span>{% endif %}{% endif %}
+      {% if not g.outcome and not g.proposal %}<button class="btn" type="button" data-open="health-{{ g.id }}">{{ "Change health" if g.confirmation else "Set health" }}</button>{% endif %}
     </div>
   </div>
   {% if g.row.description %}<p class="soft">{{ g.row.description }}</p>{% endif %}
@@ -187,6 +187,11 @@
         <div class="row-end span3"><button class="btn primary" type="submit">Save outcome</button></div>
       </form>
     </details>
+    {% if g.proposal %}
+    <details><summary>Gate health proposal</summary>
+      {{ proposal_health(p.key, g, "/p/" ~ p.key ~ "?tab=gates#g-" ~ g.id) }}
+    </details>
+    {% endif %}
     {% if g.history %}
     <details><summary>Health history ({{ g.history|length }})</summary>
       <ul class="clist">{% for c in g.history %}<li><span>{{ sticker(STATUS[c.row.value]) }} {{ c.row.note }}</span><span class="muted small">{{ c.when }}</span></li>{% endfor %}</ul>
@@ -322,6 +327,7 @@
     <div class="field"><label for="bp">Branch-to-unit pattern</label><input id="bp" name="branch_pattern" value="{{ st.branch_unit_pattern }}" placeholder="unit/<unit>; <unit>/<topic>"></div>
     <div class="field"><label for="tp">Task-key pattern (regular expression)</label><input id="tp" name="task_key_pattern" value="{{ st.task_key_pattern }}" class="mono" placeholder="\b\d\.\d{3}\b"></div>
     <div class="field"><label for="pr">Prose reading by the model</label><select id="pr" name="prose_reading"><option value="1" {% if st.prose_reading %}selected{% endif %}>On</option><option value="0" {% if not st.prose_reading %}selected{% endif %}>Off: never send this project's text to the model</option></select></div>
+    <p class="hint span3">When prose reading is on, PM Dash sends selected project text to Claude. Codex can receive that text if Claude reaches its usage limit and fallback is enabled.</p>
   </div>
   <div class="row-end"><button class="btn primary" type="submit">Save reading settings</button></div>
 </form>

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -23,6 +24,16 @@ class CliResult:
     cost: float = 0.0
     seconds: float = 0.0
     error: str = ""
+    limited: bool = False
+    provider: str = "claude"
+
+
+LIMIT = re.compile(
+    r"(?:you(?:'|’| ha)ve hit (?:your|the) (?:usage |session |weekly |daily )?limit|"
+    r"usage[_ ]limit|rate[_ -]limit|quota exceeded|exceeded (?:your |the )?(?:quota|budget)|"
+    r"budget (?:limit |has been )?(?:reached|exceeded)|error_max_budget_usd|\b429\b)",
+    re.IGNORECASE,
+)
 
 
 def build_command(prompt: str, schema: dict, *, tools: str, model: str | None, budget_usd: float, binary: str = "claude") -> list[str]:
@@ -63,15 +74,27 @@ def call(prompt: str, schema: dict, *, cwd: Path, tools: str = "Read,Glob,Grep",
                               cwd=cwd, capture_output=True, text=True, timeout=timeout, env=_env(token_file), check=False)
     except subprocess.TimeoutExpired:
         return CliResult(None, seconds=time.monotonic() - started, error=f"the model call timed out after {timeout} s")
+    except OSError:
+        return CliResult(None, error="could not start the Claude CLI")
     seconds = time.monotonic() - started
     try:
         envelope = json.loads(done.stdout)
     except json.JSONDecodeError:
-        tail = (done.stderr or done.stdout).strip().splitlines()
-        return CliResult(None, seconds=seconds, error=f"the CLI gave no JSON (exit {done.returncode}): {tail[-1] if tail else ''}"[:300])
-    cost = float(envelope.get("total_cost_usd") or 0)
-    if envelope.get("is_error") or envelope.get("subtype") != "success":
-        return CliResult(None, cost=cost, seconds=seconds, error=f"the model call failed: {envelope.get('subtype')}")
+        limited = bool(LIMIT.search(done.stderr) or LIMIT.search(done.stdout))
+        return CliResult(None, seconds=seconds, error="Claude usage limit reached" if limited else
+                         f"the Claude CLI gave no JSON (exit {done.returncode})", limited=limited)
+    if not isinstance(envelope, dict):
+        return CliResult(None, seconds=seconds, error="the Claude CLI returned an invalid envelope")
+    try:
+        cost = float(envelope.get("total_cost_usd") or 0)
+    except (ValueError, TypeError):
+        cost = 0.0
+    if done.returncode or envelope.get("is_error") or envelope.get("subtype") != "success" or not envelope.get("structured_output"):
+        details = " ".join(str(envelope.get(k, "")) for k in ("subtype", "result", "errors", "error", "stop_reason"))
+        limited = bool(LIMIT.search(details) or LIMIT.search(done.stderr))
+        if limited or done.returncode or envelope.get("is_error") or envelope.get("subtype") != "success":
+            return CliResult(None, cost=cost, seconds=seconds,
+                             error="Claude usage limit reached" if limited else "the Claude model call failed", limited=limited)
     data = envelope.get("structured_output")
     if not isinstance(data, dict):
         return CliResult(None, cost=cost, seconds=seconds, error="the answer did not match the output form")

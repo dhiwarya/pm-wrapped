@@ -180,7 +180,8 @@ def insert_many(conn: sqlite3.Connection, table: str, rows: list[dict]) -> None:
             insert(conn, table, row)
 
 
-def carry_over(conn: sqlite3.Connection, from_snapshot: int, to_snapshot: int, project_id: int, source_id: int) -> int:
+def carry_over(conn: sqlite3.Connection, from_snapshot: int, to_snapshot: int, project_id: int, source_id: int,
+               *, github_only: bool = False) -> int:
     """Copy rows of one source from the last snapshot, marked "not read today" (Part 2 §6-6)."""
     copied = 0
     with transaction(conn):
@@ -189,10 +190,14 @@ def carry_over(conn: sqlite3.Connection, from_snapshot: int, to_snapshot: int, p
             names = ",".join(f'"{c}"' for c in cols)
             cur = conn.execute(
                 f'INSERT INTO "{table}" (snapshot_id, carried_over, {names}) '
-                f'SELECT ?, 1, {names} FROM "{table}" WHERE snapshot_id = ? AND project_id = ? AND src_source_id = ?',
+                f'SELECT ?, 1, {names} FROM "{table}" WHERE snapshot_id = ? AND project_id = ? AND src_source_id = ?'
+                + (' AND src_object IS NOT NULL' if github_only else ''),
                 (to_snapshot, from_snapshot, project_id, source_id),
             )
             copied += cur.rowcount
+        if not github_only:
+            conn.execute("INSERT INTO model_source SELECT ?, source_id, commit_sha, read_at FROM model_source "
+                         "WHERE snapshot_id = ? AND source_id = ?", (to_snapshot, from_snapshot, source_id))
     return copied
 
 
@@ -200,6 +205,45 @@ def previous_rows(conn: sqlite3.Connection, table: str, snapshot_id: int | None,
     if snapshot_id is None:
         return []
     return conn.execute(f'SELECT * FROM "{table}" WHERE snapshot_id = ? AND project_id = ?', (snapshot_id, project_id)).fetchall()
+
+
+def carry_unselected(conn, previous, snapshot, selected):
+    """A scoped run replaces one project in the global snapshot."""
+    with transaction(conn):
+        for p in projects(conn):
+            pid = p["id"]
+            if pid == selected:
+                continue
+            fact_ids = {}
+            for table in (*CARRY_TABLES, "blocker", "unmatched_name"):
+                for row in rows(conn, table, previous, pid):
+                    data = dict(row)
+                    old_id = data.pop("id")
+                    data["snapshot_id"] = snapshot
+                    if "carried_over" in data:
+                        data["carried_over"] = 1
+                    new_id = insert(conn, table, data)
+                    if table == "fact":
+                        fact_ids[old_id] = new_id
+            for table, join in (("item_state", "JOIN evidence_item e ON e.id = x.evidence_item_id JOIN gate g ON g.id = e.gate_id"),
+                                ("proposal", "JOIN gate g ON g.id = x.gate_id")):
+                for row in conn.execute(f"SELECT x.* FROM {table} x {join} WHERE x.snapshot_id = ? AND g.project_id = ?", (previous, pid)):
+                    data = dict(row)
+                    del data["id"]
+                    data["snapshot_id"] = snapshot
+                    if table == "proposal":
+                        reasons = json.loads(data["reasons"])
+                        for reason in reasons:
+                            reason["facts"] = [fact_ids[i] for i in reason["facts"] if i in fact_ids]
+                        data["reasons"] = json.dumps(reasons)
+                    insert(conn, table, data)
+            conn.execute("INSERT INTO model_source SELECT ?, m.source_id, m.commit_sha, m.read_at FROM model_source m "
+                         "JOIN source s ON s.id = m.source_id WHERE m.snapshot_id = ? AND s.project_id = ?", (snapshot, previous, pid))
+
+
+def model_totals(conn, run_id):
+    row = conn.execute("SELECT coalesce(sum(cost), 0), coalesce(sum(seconds), 0) FROM model_read WHERE run_id = ?", (run_id,)).fetchone()
+    return {"cost": row[0], "seconds": row[1]}
 
 
 def rows(conn: sqlite3.Connection, table: str, snapshot_id: int, project_id: int) -> list[sqlite3.Row]:
@@ -232,12 +276,12 @@ def onboarding_progress(conn: sqlite3.Connection, onboarding_id: int, text: str)
 
 
 def end_onboarding(conn: sqlite3.Connection, onboarding_id: int, result: str, *, error: str = "", prose_read: bool = False,
-                   dropped: int = 0, cost: float = 0, seconds: float = 0) -> None:
+                   dropped: int = 0, cost: float = 0, seconds: float = 0, used_codex: bool = False) -> None:
     with transaction(conn):
         conn.execute(
             "UPDATE onboarding SET ended_at = ?, result = ?, error = ?, prose_read = ?, dropped = ?, "
-            "model_cost = ?, model_seconds = ?, progress = '' WHERE id = ?",
-            (stamp(), result, error[:2000], int(prose_read), dropped, cost, seconds, onboarding_id),
+            "model_cost = ?, model_seconds = ?, used_codex = ?, progress = '' WHERE id = ?",
+            (stamp(), result, error[:2000], int(prose_read), dropped, cost, seconds, int(used_codex), onboarding_id),
         )
 
 

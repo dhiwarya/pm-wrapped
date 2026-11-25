@@ -46,6 +46,12 @@
       <div class="field"><label for="rt">Run time</label><input id="rt" name="run_time" value="{{ run_time }}" pattern="[0-2][0-9]:[0-5][0-9]" maxlength="5"></div>
       <div class="field"><label for="rw">Review waiting after</label><input id="rw" name="review_wait_days" value="{{ review_wait_days }}" inputmode="numeric" maxlength="2"></div>
       <div class="field"><label for="si">Stale input after</label><input id="si" name="stale_input_days" value="{{ stale_input_days }}" inputmode="numeric" maxlength="2"></div>
+      <div class="field"><label for="er">Evidence risk within</label><input id="er" name="evidence_risk_days" value="{{ evidence_risk_days }}" inputmode="numeric" maxlength="2"></div>
+      <div class="field"><label for="br">Blocker risk after</label><input id="br" name="blocker_risk_days" value="{{ blocker_risk_days }}" inputmode="numeric" maxlength="2"></div>
+      <div class="field"><label for="who">Show what waits on</label><select id="who" name="owner_person_id"><option value="">No person selected</option>{% for person in people %}<option value="{{ person.id }}"{% if owner_person_id == person.id|string %} selected{% endif %}>{{ person.display_name }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="mt">Model time limit (seconds)</label><input id="mt" name="model_timeout_s" type="number" value="{{ model_timeout_s }}" min="1" max="1800"></div>
+      <div class="field"><label for="mb">Claude budget (USD)</label><input id="mb" name="model_budget_usd" type="number" value="{{ model_budget_usd }}" min="0.01" max="100" step="0.01"></div>
+      <div class="field"><label for="bb">Baseline Claude budget (USD)</label><input id="bb" name="baseline_model_budget_usd" type="number" value="{{ baseline_model_budget_usd }}" min="0.01" max="100" step="0.01"></div>
     </div>
     <p class="hint">Thresholds are in working days. The run time decides when the stale banner appears; the timer that starts the run is set where PM Dash is installed.</p>
     <div class="row-end"><button class="btn primary" type="submit">Save</button></div>

@@ -49,6 +49,9 @@ def doctor_checks(config: Config) -> list[tuple[bool, str]]:
             results.append((False, f"Claude Code CLI did not answer: {exc}"))
     else:
         results.append((True, "Claude Code CLI not found: onboarding and prose reading will be skipped, the rest works"))
+    if config.codex_fallback:
+        codex = shutil.which("codex")
+        results.append((True, "Codex CLI available for fallback" if codex else "Codex fallback unavailable: Codex CLI is not on PATH"))
     token = config.data_dir / "secrets" / "github-token"
     results.append((True, "GitHub token present" if token.exists() else "no GitHub token: PRs, reviews and issues will not be read"))
     try:

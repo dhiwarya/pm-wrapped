@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_ui.html" import sticker, blob, segbar, health_dialog, srclink %}
+{% from "_ui.html" import sticker, blob, segbar, health_dialog, proposal_health, srclink %}
 {% block title %}Today · pm·dash{% endblock %}
 {% block main %}
 <section class="hero">
@@ -8,10 +8,15 @@
     <em>{% if need == 0 %}Nothing needs your call.{% else %}{{ need }} {{ "needs" if need == 1 else "need" }} your call.{% endif %}</em></h1>
   {% if snapshot %}
   <p>Snapshot {{ snap_when }} · {{ sources_read }} {{ plural(sources_read, "source") }} read · {{ problems }} {{ plural(problems, "problem") }}{% if problems %} · <a href="/runs">see them</a>{% endif %}</p>
+  {% if prose_failed %}<p>Some project prose was not read. <a href="/runs">See the run details</a></p>{% endif %}
   {% else %}
   <p>No run yet. Projects with sources fill in after the first run; others are kept by hand.</p>
   {% endif %}
 </section>
+{% if digest %}<section class="tile t-violet weekday-story"><div class="row">
+  <h2>{{ short_date(digest.day) }} story</h2><a class="pill" href="/story/{{ digest.day }}">Play story</a>
+  <a class="pill ghost" href="/changes/{{ digest.day }}">Read the digest</a>
+</div></section>{% endif %}
 
 {% if not blocks %}
 <section class="tile t-lime empty">
@@ -55,7 +60,9 @@
     </div>
 
     <div class="tile {{ g.status.tile }} health s4">
-      {% if g.confirmation %}
+      {% if g.proposal %}
+        {{ proposal_health(p.key, g, "/") }}
+      {% elif g.confirmation %}
         <div class="eyebrow">Health, set by you</div>
         <div class="row">{{ sticker(g.status, big=True) }}</div>
         <div class="was">Since {{ g.confirmed_on }}.{% if g.confirmation.note %} “{{ g.confirmation.note }}”{% endif %}</div>
@@ -88,7 +95,7 @@
       <ol class="blockers">
         {% for x in b.blockers %}
         <li><span class="k">{{ x.age }}</span><span><span class="t">{{ x.detail }}</span><br>
-          <span class="d">{{ x.word }}{% if x.who %} · {{ x.who }}{% endif %}{% if x.src.label %} · {{ srclink(x.src) }}{% endif %}</span></span></li>
+          <span class="d">{{ x.word }}{% if x.model %} · Read by model{% endif %}{% if x.who %} · {{ x.who }}{% endif %}{% if x.src.label %} · {{ srclink(x.src) }}{% endif %}</span></span></li>
         {% endfor %}
       </ol>
       {% if b.blocker_count > b.blockers|length %}<p class="d">and {{ b.blocker_count - b.blockers|length }} more on the <a href="/timeline?project={{ p.key }}">timeline</a></p>{% endif %}
@@ -105,6 +112,12 @@
       {% if b.open_proposals %}<a class="pill" href="/p/{{ p.key }}/onboarding">Review proposals</a>{% else %}<a class="pill" href="/p/{{ p.key }}?tab=gates">Add a gate</a>{% endif %}
     </div>
   </div>
+  {% endif %}
+  {% if b.num_changes %}
+  <section class="tile t-lime since-tile">
+    <div class="row"><h3>Since the last snapshot</h3><a class="src" href="/changes#project-{{ p.id }}">{{ b.num_changes }} {{ plural(b.num_changes, 'change') }} →</a></div>
+    <dl>{% for label, total in b.changes.items() %}<div><dt>{{ label }}</dt><dd>{{ total }}</dd></div>{% endfor %}</dl>
+  </section>
   {% endif %}
 </article>
 {% endfor %}

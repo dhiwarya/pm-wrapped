@@ -39,6 +39,11 @@
       <h3 class="sub">Problems</h3>
       <ul class="clist">{% for p in r.problems %}<li><span>{{ p.reason }}</span><span class="d">{{ p.stage }}{% if p.adapter %} · {{ p.adapter }}{% endif %}{% if p.path %} · {{ p.path }}{% if p.line %}:{{ p.line }}{% endif %}{% endif %}</span></li>{% endfor %}</ul>
       {% endif %}
+      {% if r.model_reads %}
+      <h3 class="sub">Model activity</h3>
+      <ul class="clist">{% for call in r.model_reads %}<li><span>{{ call.project }} · {{ 'Prose' if call.stage == 'ST-4' else 'Gate health' }} · {{ {'codex': 'Codex fallback', 'claude': 'Claude', 'none': 'No model call'}[call.provider] }}</span>
+        <span class="d">{{ '%.1f'|format(call.seconds) }} s{% if call.cost %} · ${{ '%.3f'|format(call.cost) }} Claude usage{% endif %}{% if call.stage == 'ST-4' %} · {{ call.kept }} kept · {{ call.dropped }} dropped{% endif %}</span></li>{% endfor %}</ul>
+      {% endif %}
       <p class="d">{{ r.counts.get("requests", 0) }} GitHub {{ plural(r.counts.get("requests", 0), "request") }}, all GET.</p>
     </div>
   </details>

@@ -323,3 +323,30 @@ svg.timeline .warnlabel { fill: #ff8e98; font-weight: 700; }
 .tile:not(.t-surface):not(.t-night) .btn { background: transparent; color: inherit; border-color: currentColor; }
 .tile:not(.t-surface):not(.t-night) .btn.primary { background: var(--dark-ink); color: #fff; border-color: transparent; }
 .t-night .btn { background: rgba(255,255,255,.08); color: #f6f3ee; border-color: rgba(255,255,255,.25); }
+
+.health-reasons { padding-inline-start: 1.2rem; margin-block: .55rem 1rem; }
+.health-reasons li + li { margin-block-start: .35rem; }
+.digest, .change-list { margin-block: 1rem; }
+.digest-text, .change-list pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.digest-text { font: inherit; line-height: 1.55; }
+.change-list summary { cursor: pointer; }
+.story-player { width: min(31rem, calc(100vw - 1.1rem)); max-height: calc(100dvh - 1.1rem); padding: .8rem; }
+.story-player::backdrop { background: rgb(10 8 24 / 82%); }
+.story-toolbar { display: flex; gap: .55rem; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.story-toolbar h1 { font-size: clamp(1rem, 4vw, 1.5rem); margin-block: .4rem; margin-inline-end: auto; }
+.story-progress { display: flex; gap: .2rem; margin-block: .7rem .3rem; }
+.story-progress span { flex: 1; background: var(--hair); height: .23rem; border-radius: 1rem; overflow: hidden; }
+.story-progress i { display: block; background: #6a43ff; height: 100%; }
+.story-count { font-size: .82rem; margin-block-end: .45rem; }
+.story-card { min-height: min(25rem, 59dvh); margin-block-end: .7rem; overflow-wrap: anywhere; touch-action: pan-y; }
+.story-card[hidden] { display: none; }
+.story-card h2 { margin-block: .35rem .7rem; }
+.story-card p { margin-block: .45rem; }
+.weekday-story, .since-tile { margin-block: 1rem; }
+.weekday-story .row, .since-tile .row, .digest .row { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+.weekday-story h2, .since-tile h3 { margin: 0 auto 0 0; }
+.since-tile dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 0; gap: .8rem; }
+.since-tile dl div { display: flex; flex-direction: column-reverse; }
+.since-tile dt { font-weight: 650; }
+.since-tile dd { margin: 0; font: 800 clamp(1.8rem, 5vw, 3.75rem)/1 var(--display); }
+@media (max-width: 500px) { .since-tile dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
