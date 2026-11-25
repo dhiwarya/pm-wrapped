@@ -1,0 +1,17 @@
+# PM Dash web application (Detailed Design Part 3 §12-2). Listens on loopback only;
+# publish it inside the tailnet with `tailscale serve`, never Funnel.
+[Unit]
+Description=PM Dash web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/pm-dash web
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

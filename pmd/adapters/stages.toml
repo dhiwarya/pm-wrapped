@@ -1,0 +1,34 @@
+# AI-DLC construction stages, in order (Part 2 §8-3). Kept in a settings file, not in
+# code, so a workflow with other stage names needs no code change.
+# folder: the stage folder under aidlc-docs/construction/<unit>/
+# names:  words that name the stage in a dashboard file's stage text
+
+[[stage]]
+key = "functional-design"
+label = "Functional design"
+folder = "functional-design"
+names = ["functional design"]
+
+[[stage]]
+key = "nfr-requirements"
+label = "NFR requirements"
+folder = "nfr-requirements"
+names = ["nfr requirements", "nfr req"]
+
+[[stage]]
+key = "nfr-design"
+label = "NFR design"
+folder = "nfr-design"
+names = ["nfr design"]
+
+[[stage]]
+key = "infrastructure-design"
+label = "Infrastructure design"
+folder = "infrastructure-design"
+names = ["infrastructure design", "infra design"]
+
+[[stage]]
+key = "code-generation"
+label = "Code generation"
+folder = "code"
+names = ["code generation", "code"]

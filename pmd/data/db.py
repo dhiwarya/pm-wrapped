@@ -20,6 +20,32 @@ HAND_TABLES = (
     "confirmation",
     "holiday",
     "setting",
+    "source",
+    "person_alias",
+    "evidence_link",
+    "onboarding_decision",
+)
+
+# Tables written by the run and onboarding processes only (Part 2 §6-3).
+RUN_TABLES = (
+    "run",
+    "onboarding",
+    "run_source",
+    "run_problem",
+    "request_log",
+    "snapshot",
+    "current_snapshot",
+    "unit_state",
+    "unit_stage_state",
+    "task_state",
+    "pr_state",
+    "review_state",
+    "issue_state",
+    "fact",
+    "blocker",
+    "item_state",
+    "unmatched_name",
+    "onboarding_proposal",
 )
 
 
@@ -33,8 +59,27 @@ def connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+_savepoints = 0
+
+
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """One transaction. Nested use becomes a savepoint, so a function that opens a
+    transaction can be called inside a larger one (accepting a proposal, Part 2 §6-7)."""
+    global _savepoints
+    if conn.in_transaction:
+        _savepoints += 1
+        name = f"sp_{_savepoints}"
+        conn.execute(f"SAVEPOINT {name}")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute(f"ROLLBACK TO {name}")
+            conn.execute(f"RELEASE {name}")
+            raise
+        else:
+            conn.execute(f"RELEASE {name}")
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn

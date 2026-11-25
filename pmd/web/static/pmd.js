@@ -26,7 +26,9 @@
     var data = new FormData(form, e.submitter || undefined);
     var buttons = $$("button", form);
     buttons.forEach(function (b) { b.disabled = true; });
-    fetch(form.action, { method: "POST", body: data, headers: { "X-PMD-Request": "1" }, credentials: "same-origin" })
+    // getAttribute: a field named "action" would hide form.action
+    var target = new URL(form.getAttribute("action") || window.location.href, window.location.href).href;
+    fetch(target, { method: "POST", body: data, headers: { "X-PMD-Request": "1" }, credentials: "same-origin" })
       .then(function (r) {
         if (r.redirected) { window.location.assign(r.url); return; }
         return r.text().then(function (t) {

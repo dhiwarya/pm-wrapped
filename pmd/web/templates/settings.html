@@ -40,6 +40,32 @@
     </form>
   </div>
 
+  <form class="tile t-surface s5 form" method="post" action="/settings/run">
+    <div class="eyebrow">The weekday run</div>
+    <div class="grid3">
+      <div class="field"><label for="rt">Run time</label><input id="rt" name="run_time" value="{{ run_time }}" pattern="[0-2][0-9]:[0-5][0-9]" maxlength="5"></div>
+      <div class="field"><label for="rw">Review waiting after</label><input id="rw" name="review_wait_days" value="{{ review_wait_days }}" inputmode="numeric" maxlength="2"></div>
+      <div class="field"><label for="si">Stale input after</label><input id="si" name="stale_input_days" value="{{ stale_input_days }}" inputmode="numeric" maxlength="2"></div>
+    </div>
+    <p class="hint">Thresholds are in working days. The run time decides when the stale banner appears; the timer that starts the run is set where PM Dash is installed.</p>
+    <div class="row-end"><button class="btn primary" type="submit">Save</button></div>
+  </form>
+
+  <div class="tile t-pink s7">
+    <div class="eyebrow">Names with no person</div>
+    {% if unmatched %}
+    <ul class="clist">{% for u in unmatched %}<li>
+      <form class="inline grow" method="post" action="/settings/names">
+        <span><b>{{ u.value }}</b> <span class="d">{{ u.kind|lower }} · {{ u.projects }}</span></span>
+        <input type="hidden" name="value" value="{{ u.value }}"><input type="hidden" name="kind" value="{{ u.kind }}">
+        <label class="sr" for="un{{ loop.index }}">Person</label><input id="un{{ loop.index }}" name="person" list="people-list" placeholder="person, new or existing" required maxlength="80">
+        <button class="btn sm" type="submit">Attach</button>
+      </form></li>{% endfor %}</ul>
+    <datalist id="people-list">{% for person in people %}<option value="{{ person.display_name }}">{% endfor %}</datalist>
+    {% else %}<p>Every name in the last snapshot belongs to a person.</p>{% endif %}
+    {% if aliases %}<details><summary class="d">{{ aliases|length }} known {{ plural(aliases|length, "alias") }}</summary><ul class="clist">{% for a in aliases %}<li><span>{{ a.display_name }}</span><span class="d">{{ a.kind|lower }} {{ a.value }}</span></li>{% endfor %}</ul></details>{% endif %}
+  </div>
+
   <div class="tile t-night s5">
     <div class="eyebrow">Archived projects</div>
     {% if archived %}

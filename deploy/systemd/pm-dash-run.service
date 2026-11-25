@@ -1,0 +1,13 @@
+# One scheduled run (Part 3 §10-1). The run itself skips Saturday and Sunday (R-R2)
+# and runs at most once a day (R-R3), so a late start after sleep or boot is safe.
+[Unit]
+Description=PM Dash weekday run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/pm-dash run --trigger schedule
+UMask=0077
+NoNewPrivileges=yes
+TimeoutStartSec=45min

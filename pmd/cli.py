@@ -1,6 +1,6 @@
-"""``pm-dash web | doctor`` (Detailed Design Part 1 §1, Part 3 §12-1).
+"""``pm-dash web | run | onboard | doctor`` (Detailed Design Part 1 §1, Part 3 §10, §12-1).
 
-``run`` arrives with Phase 2 and ``backup`` with Phase 4.
+``backup`` arrives with Phase 4.
 """
 
 from __future__ import annotations
@@ -36,6 +36,21 @@ def doctor_checks(config: Config) -> list[tuple[bool, str]]:
     if secrets.exists():
         loose = [p.name for p in [secrets, *secrets.iterdir()] if stat.S_IMODE(p.stat().st_mode) & 0o077]
         results.append((not loose, "secrets are readable by their owner only" + (f" (fix: {', '.join(loose)})" if loose else "")))
+    import shutil
+    import subprocess
+
+    claude = shutil.which("claude")
+    if claude:
+        try:
+            out = subprocess.run([claude, "--help"], capture_output=True, text=True, timeout=30).stdout
+            missing = [o for o in ("--restricted", "--tools", "--json-schema", "--strict-mcp-config", "--no-session-persistence", "--max-budget-usd") if o not in out]
+            results.append((not missing, "Claude Code CLI has the options the model step needs" + (f" (missing: {', '.join(missing)})" if missing else "")))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            results.append((False, f"Claude Code CLI did not answer: {exc}"))
+    else:
+        results.append((True, "Claude Code CLI not found: onboarding and prose reading will be skipped, the rest works"))
+    token = config.data_dir / "secrets" / "github-token"
+    results.append((True, "GitHub token present" if token.exists() else "no GitHub token: PRs, reviews and issues will not be read"))
     try:
         from .data import db
 
@@ -55,7 +70,7 @@ def cmd_doctor(config: Config) -> int:
     return 0 if all(ok for ok, _ in results) else 1
 
 
-def cmd_web(config: Config) -> int:
+def cmd_web(config: Config, config_path: Path | None = None) -> int:
     failed = [text for ok, text in doctor_checks(config) if not ok]
     if failed:
         for text in failed:
@@ -66,8 +81,27 @@ def cmd_web(config: Config) -> int:
 
     from .web.app import create_app
 
-    uvicorn.run(create_app(config), host=config.listen_host, port=config.port, proxy_headers=False, log_level="info")
+    uvicorn.run(create_app(config, config_path=config_path), host=config.listen_host, port=config.port, proxy_headers=False, log_level="info")
     return 0
+
+
+def cmd_run(config: Config, args) -> int:
+    from .run.controller import run
+
+    outcome = run(config, trigger=args.trigger.upper(), project_key=args.project, baseline=args.baseline)
+    print(f"{outcome.result}: run {outcome.run_id or '-'} {outcome.message}".rstrip())
+    for p in outcome.problems:
+        print("  problem: " + p)
+    return 0 if outcome.result in ("OK", "PARTIAL", "SKIPPED") else 1
+
+
+def cmd_onboard(config: Config, args) -> int:
+    from .onboard.agent import onboard
+
+    outcome = onboard(config, args.project)
+    print(f"{outcome.result}: onboarding {outcome.onboarding_id or '-'}, {outcome.proposals} proposals, "
+          f"{outcome.dropped} dropped by the quote check. {outcome.message}".rstrip())
+    return 0 if outcome.result == "OK" else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,9 +111,21 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("web", help="serve the dashboard on the loopback address")
     sub.add_parser("doctor", help="check the installation")
+    p_run = sub.add_parser("run", help="read the sources and publish a snapshot")
+    p_run.add_argument("--trigger", choices=["schedule", "hand"], default="hand")
+    p_run.add_argument("--project", help="one project key (default: all active projects)")
+    p_run.add_argument("--baseline", action="store_true", help="read everything, not only changes")
+    p_onb = sub.add_parser("onboard", help="read a project's sources and propose its setup")
+    p_onb.add_argument("--project", required=True)
     args = parser.parse_args(argv)
     config = load(args.config)
-    return {"web": cmd_web, "doctor": cmd_doctor}[args.command](config)
+    if args.command in ("run", "onboard"):
+        return {"run": cmd_run, "onboard": cmd_onboard}[args.command](config, args)
+    if args.command == "web":
+        import os
+
+        return cmd_web(config, args.config or (Path(os.environ["PMD_CONFIG"]) if os.environ.get("PMD_CONFIG") else None))
+    return cmd_doctor(config)
 
 
 if __name__ == "__main__":

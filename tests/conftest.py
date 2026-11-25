@@ -31,7 +31,7 @@ def conn(config):
 
 @pytest.fixture
 def client(config, conn):
-    app = create_app(config, now=lambda: NOW)
+    app = create_app(config, now=lambda: NOW, spawn=lambda args: None)
     with TestClient(app, base_url=ORIGIN) as c:
         yield c
 

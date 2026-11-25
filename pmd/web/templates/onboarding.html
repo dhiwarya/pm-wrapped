@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% from "_ui.html" import srclink, blob %}
+{% set p = project %}
+{% block title %}Onboarding · {{ p.name }} · pm·dash{% endblock %}
+{% block head_extra %}{% if starting is defined %}<meta http-equiv="refresh" content="2">{% elif onboarding and onboarding.result == "RUNNING" %}<meta http-equiv="refresh" content="3; url=/p/{{ project.key }}/onboarding/{{ onboarding.id }}">{% endif %}{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Setup review</h1><p><a href="/p/{{ p.key }}">{{ p.name }}</a> · the agent proposes, you decide</p></div>
+
+{% if starting is defined %}
+<section class="tile {{ tile }} empty">{{ blob(p.colour) }}<div class="eyebrow">Starting</div><h2>The onboarding agent is starting…</h2>
+  <p>This page refreshes by itself. If nothing changes within a minute, the process could not start: see <code>logs/onboard.log</code> in the data directory.</p></section>
+{% elif not onboarding %}
+<section class="tile {{ tile }} empty">{{ blob(p.colour) }}<div class="eyebrow">No onboarding yet</div><h2>Let the agent read the sources.</h2>
+  <form method="post" action="/p/{{ p.key }}/onboard"><button class="pill" type="submit">Look for new setup</button></form></section>
+{% elif onboarding.result == "RUNNING" %}
+<section class="tile {{ tile }} empty">{{ blob(p.colour) }}<div class="eyebrow">Reading · started {{ started }}</div>
+  <h2>{{ onboarding.progress or "Working" }}…</h2><p>This page refreshes by itself. The agent writes proposals only; nothing is stored until you accept it.</p></section>
+{% elif onboarding.result == "FAILED" %}
+<section class="tile t-red empty"><div class="eyebrow">Onboarding failed</div><h2>Nothing was proposed.</h2><p>{{ onboarding.error }}</p>
+  {% for x in problems %}<p class="d">{{ x.stage }}: {{ x.reason }}</p>{% endfor %}
+  <form method="post" action="/p/{{ p.key }}/onboard"><button class="pill" type="submit">Try again</button></form></section>
+{% else %}
+<div class="bento">
+  <div class="tile {{ tile }} s7">
+    {{ blob(p.colour) }}
+    <div class="eyebrow">Onboarding {{ onboarding.id }} · {{ started }}</div>
+    <div class="n review-n" data-count="{{ open }}">{{ open }}</div>
+    <div class="what">{{ plural(open, "proposal") }} left to decide, of {{ total }}</div>
+    <p class="soft">{% if onboarding.prose_read %}Prose read by the model. {{ onboarding.dropped }} {{ plural(onboarding.dropped, "proposal") }} dropped by the quote check. Model cost ${{ "%.2f"|format(onboarding.model_cost) }}.{% else %}Prose not read: only what a program found exactly is proposed.{% endif %} Took {{ took }}.</p>
+  </div>
+  <div class="tile t-night s5">
+    <div class="eyebrow">Read</div>
+    <ul class="clist">{% for s in sources %}<li><span><b>{{ s.source_key }}</b> {{ s.branch }}</span><span class="d">{% if s.ok %}{{ s.commit_sha[:7] }}{% else %}{{ s.error }}{% endif %}</span></li>{% endfor %}</ul>
+    {% if problems %}<details><summary class="d">{{ problems|length }} {{ plural(problems|length, "note") }} on what was not read</summary><ul class="clist">{% for x in problems %}<li><span class="d">{{ x.path }} {{ x.reason }}</span></li>{% endfor %}</ul></details>{% endif %}
+    <div class="row-end"><a class="pill ghost" href="/p/{{ p.key }}">Back to the project</a>
+      <form method="post" action="/run"><input type="hidden" name="project" value="{{ p.key }}"><button class="pill" type="submit">Finish and run</button></form></div>
+  </div>
+</div>
+
+{% for kind, items in groups.items() if items %}
+{% set open_items = items|selectattr("open")|list %}
+<section class="tile {{ 't-butter' if kind == 'GATE' else 't-surface' }} proposals" id="k-{{ kind }}">
+  <div class="proposals-head"><h2>{{ kind_word[kind] }}</h2><span class="tag">{{ open_items|length }} open</span>
+    {% if kind in ("PERSON", "PATTERN", "HOLIDAY", "WBS", "DASHBOARD_FILE") and open_items|selectattr("read_by", "equalto", "PROGRAM")|list|length > 1 %}
+    <span class="spacer"></span><form method="post" action="/p/{{ p.key }}/onboarding/{{ onboarding.id }}/accept-kind"><input type="hidden" name="kind" value="{{ kind }}"><button class="btn sm" type="submit">Accept all read by program</button></form>{% endif %}
+  </div>
+  {% if kind == "GATE" %}<p class="d">Accept gates one by one. A date read from prose is shown first in its sentence, so check it against the quote.</p>{% endif %}
+  <ul class="plist">
+  {% for x in items %}{% set pl = x.payload %}
+    <li class="prop {% if not x.open %}decided{% endif %}" id="p-{{ x.id }}">
+      {% if not x.open %}
+        <span class="d">{{ (x.decision|lower).replace("edited", "accepted with your edits") }}: <b>{{ pl.key or pl.name or pl.display_name or pl.text or pl.path or pl.pattern or pl.date }}</b></span>
+        {% if x.decision == "REJECTED" %}<form method="post" action="/p/{{ p.key }}/proposals/{{ x.id }}"><input type="hidden" name="action" value="undo"><input type="hidden" name="back" value="/p/{{ p.key }}/onboarding/{{ onboarding.id }}#k-{{ kind }}"><button class="btn sm" type="submit">Undo</button></form>{% endif %}
+      {% else %}
+      <form class="propform" method="post" action="/p/{{ p.key }}/proposals/{{ x.id }}">
+        <input type="hidden" name="back" value="/p/{{ p.key }}/onboarding/{{ onboarding.id }}#k-{{ kind }}">
+        <div class="propbody">
+          {% if kind == "GATE" %}
+            <div class="grid3">
+              <div class="field"><label for="k{{ x.id }}">Key</label><input id="k{{ x.id }}" name="edit_key" value="{{ pl.key }}" maxlength="16"></div>
+              <div class="field"><label for="n{{ x.id }}">Name</label><input id="n{{ x.id }}" name="edit_name" value="{{ pl.name }}" maxlength="120"></div>
+              <div class="field"><label for="d{{ x.id }}">Date</label><input id="d{{ x.id }}" name="edit_date" type="date" value="{{ pl.date }}"></div>
+            </div>
+          {% elif kind == "EVIDENCE" %}
+            <div class="grid3">
+              <div class="field"><label for="g{{ x.id }}">Gate</label><input id="g{{ x.id }}" name="edit_gate_key" value="{{ pl.gate_key }}" maxlength="16"></div>
+              <div class="field span2"><label for="t{{ x.id }}">Evidence item</label><input id="t{{ x.id }}" name="edit_text" value="{{ pl.text }}" maxlength="500"></div>
+            </div>
+            {% if not x.gate_ready %}<p class="d">Gate {{ pl.gate_key }} is not in the project yet: accept it first, or name an open gate.</p>{% endif %}
+          {% elif kind == "PROJECT" %}
+            <div class="field"><label for="pn{{ x.id }}">Name</label><input id="pn{{ x.id }}" name="edit_name" value="{{ pl.name }}" maxlength="120"></div>
+            <div class="field"><label for="ps{{ x.id }}">Scope</label><textarea id="ps{{ x.id }}" name="edit_scope_note" rows="3" maxlength="1000">{{ pl.scope_note }}</textarea></div>
+          {% elif kind == "WBS" %}
+            <p><b>{{ pl.path }}</b> · {{ pl.rows }} rows read · {{ pl.problems|length }} {{ plural(pl.problems|length, "problem") }}</p>
+            <table class="tbl mini"><tbody>{% for field, col in pl.mapping.columns.items() %}<tr><td>{{ field }}</td><td>← “{{ col }}”</td></tr>{% endfor %}
+              <tr><td>dates</td><td>{{ pl.mapping.date_format }}</td></tr>
+              <tr><td>status words</td><td>{% for w, s in pl.mapping.status.items() %}“{{ w }}” → {{ s|lower }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr></tbody></table>
+            {% if pl.problems %}<details><summary class="d">Problems in the preview</summary><ul class="clist">{% for pr in pl.problems %}<li><span class="d">{{ pr }}</span></li>{% endfor %}</ul></details>{% endif %}
+          {% elif kind == "DASHBOARD_FILE" %}
+            <p><b>{{ pl.path }}</b> in {{ pl.source_key }}</p>
+          {% elif kind == "PATTERN" %}
+            <div class="field"><label for="pt{{ x.id }}">{{ "Branch-to-unit pattern" if pl.which == "BRANCH_UNIT" else "Task-key pattern" }}</label><input id="pt{{ x.id }}" name="edit_pattern" value="{{ pl.pattern }}" class="mono"></div>
+            <p class="d">Examples: {{ pl.examples|join(", ") }}</p>
+          {% elif kind == "PERSON" %}
+            <div class="field"><label for="pp{{ x.id }}">Name</label><input id="pp{{ x.id }}" name="edit_display_name" value="{{ pl.display_name }}" maxlength="80"></div>
+            <p class="d">{% for a in pl.aliases %}{{ a.kind|lower }} {{ a.value }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+          {% elif kind == "HOLIDAY" %}
+            <div class="grid3"><div class="field"><label for="hd{{ x.id }}">Date</label><input id="hd{{ x.id }}" name="edit_date" type="date" value="{{ pl.date }}"></div>
+              <div class="field span2"><label for="hl{{ x.id }}">Label</label><input id="hl{{ x.id }}" name="edit_label" value="{{ pl.label }}"></div></div>
+          {% endif %}
+          <p class="origin">{% if x.read_by == "MODEL" %}<span class="m" title="Read by the model from prose">M</span> {% endif %}{{ x.origin.words }}{% if x.origin.url %} · <a class="src" href="{{ x.origin.url }}" target="_blank" rel="noreferrer noopener">open</a>{% endif %}</p>
+          {% if x.quote %}<blockquote class="quote">{{ x.quote }}</blockquote>{% endif %}
+        </div>
+        <div class="propacts">
+          <button class="btn primary sm" name="action" value="accept" type="submit">Accept</button>
+          <button class="btn sm" name="action" value="edit" type="submit">Accept with my edits</button>
+          <button class="btn sm danger" name="action" value="reject" type="submit">Reject</button>
+        </div>
+      </form>
+      {% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% if total == 0 %}<section class="tile t-night empty"><div class="eyebrow">Nothing new</div><h2>The project already has everything the agent found.</h2></section>{% endif %}
+{% endif %}
+{% endblock %}

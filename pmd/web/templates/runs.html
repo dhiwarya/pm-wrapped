@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Runs · pm·dash{% endblock %}
+{% block head_extra %}{% if head and head.running %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Runs</h1><p>One scheduled run each weekday at the run time. None on Saturday and Sunday.</p>
+  <span class="spacer"></span>
+  {% if projects %}
+  <form class="inline" method="post" action="/run">
+    <label class="sr" for="rp">Project</label>
+    <select id="rp" name="project"><option value="">All projects</option>{% for p in projects %}<option value="{{ p.key }}">{{ p.name }}</option>{% endfor %}</select>
+    <button class="btn primary" type="submit" {% if head and head.running %}disabled{% endif %}>Run now</button>
+  </form>
+  {% endif %}
+</div>
+{% if not rows %}
+<section class="tile t-night empty"><div class="eyebrow">No runs yet</div><h2>Nothing has been read.</h2>
+  <p>Add a source to a project, then press Run now. The weekday timer starts runs by itself once PM Dash is installed.</p></section>
+{% endif %}
+<div class="runs">
+{% for r in rows %}{% set run = r.row %}
+  <details class="run" {% if loop.first %}open{% endif %}>
+    <summary class="run-head">
+      <span><span class="when">{{ r.when }}</span><br><span class="meta">{{ run.trigger|lower }}{% if run.scope %} · {{ run.scope }}{% endif %}{% if run.baseline %} · baseline{% endif %}</span></span>
+      <span><span class="sticker xs {{ r.look.cls }}"><i aria-hidden="true">{{ r.look.icon }}</i>{{ r.look.word }}</span></span>
+      <span class="meta">{{ r.took }}</span>
+      <span class="nums">
+        <span><b>{{ r.counts.get("fact", 0) }}</b><i>facts</i></span>
+        <span><b>{{ r.counts.get("task_state", 0) }}</b><i>tasks</i></span>
+        <span><b>{{ r.counts.get("pr_state", 0) }}</b><i>PRs</i></span>
+        <span><b>{{ r.counts.get("blocker", 0) }}</b><i>blockers</i></span>
+        <span><b>{{ r.problems|length }}</b><i>problems</i></span>
+      </span>
+    </summary>
+    <div class="run-body">
+      {% if run.error %}<p class="note-line">{{ run.error }}</p>{% endif %}
+      <h3 class="sub">Commits read</h3>
+      <ul class="clist">{% for s in r.sources %}<li><span><b>{{ s.project_key or "?" }}/{{ s.source_key or s.source_id }}</b> {{ s.branch }}</span><span class="d">{% if s.ok %}{{ s.commit_sha[:7] }} · {{ s.commit_date[:16]|replace("T", " ") }}{% else %}not read: {{ s.error }}{% endif %}</span></li>{% else %}<li><span class="d">none</span></li>{% endfor %}</ul>
+      {% if r.problems %}
+      <h3 class="sub">Problems</h3>
+      <ul class="clist">{% for p in r.problems %}<li><span>{{ p.reason }}</span><span class="d">{{ p.stage }}{% if p.adapter %} · {{ p.adapter }}{% endif %}{% if p.path %} · {{ p.path }}{% if p.line %}:{{ p.line }}{% endif %}{% endif %}</span></li>{% endfor %}</ul>
+      {% endif %}
+      <p class="d">{{ r.counts.get("requests", 0) }} GitHub {{ plural(r.counts.get("requests", 0), "request") }}, all GET.</p>
+    </div>
+  </details>
+{% endfor %}
+</div>
+{% endblock %}

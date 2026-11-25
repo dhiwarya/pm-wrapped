@@ -7,6 +7,8 @@ tables only, then redirects back with a short message.
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..config import Config
-from ..data import db, hand
+from ..data import db, hand, views
 from ..data.hand import InputError
 from . import present
 from .guard import GuardMiddleware
@@ -40,7 +42,27 @@ templates.env.globals.update(
     plural=present.plural,
     short_date=present.short_date,
     version=__version__,
+    RUN_RESULT=present.RUN_RESULT,
+    BLOCKER_WORD=present.BLOCKER_WORD,
+    KIND_WORD=present.KIND_WORD,
+    LINK_WORD=present.LINK_WORD,
+    SOURCE_ROLES=hand.SOURCE_ROLES,
+    json_pretty=present.json_pretty,
 )
+templates.env.filters["fromjson"] = __import__("json").loads
+
+
+def default_spawner(config: Config, config_path: Path | None) -> Callable[[list[str]], None]:
+    """Start ``pm-dash run`` or ``pm-dash onboard`` as its own process and return at once (Part 1 §2-1)."""
+
+    def spawn(args: list[str]) -> None:
+        logs = config.data_dir / "logs"
+        logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cmd = [sys.executable, "-m", "pmd.cli", *(["--config", str(config_path)] if config_path else []), *args]
+        with open(logs / f"{args[0]}.log", "ab") as log:
+            subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, cwd=config.data_dir)
+
+    return spawn
 
 
 def safe_back(value: object, default: str) -> str:
@@ -62,10 +84,12 @@ def redirect(url: str, *, msg: str = "", err: str = "") -> RedirectResponse:
     return RedirectResponse(with_query(url, msg=msg, err=err), status_code=303)
 
 
-def create_app(config: Config, *, now: Callable[[], datetime] | None = None) -> FastAPI:
+def create_app(config: Config, *, now: Callable[[], datetime] | None = None, config_path: Path | None = None,
+               spawn: Callable[[list[str]], None] | None = None) -> FastAPI:
     app = FastAPI(title="PM Dash", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config = config
     app.state.now = now or (lambda: datetime.now(UTC))
+    app.state.spawn = spawn or default_spawner(config, config_path)
     db.open_store(config.db_path).close()
 
     app.add_middleware(GuardMiddleware, config=config)
@@ -78,8 +102,17 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None) -> 
         finally:
             conn.close()
 
-    def render(request: Request, name: str, ctx: dict, *, nav: str = "", status: int = 200) -> HTMLResponse:
+    def render(request: Request, name: str, ctx: dict, *, nav: str = "", status: int = 200,
+               conn: sqlite3.Connection | None = None) -> HTMLResponse:
+        own = conn is None
+        conn = conn or db.connect(config.db_path)
+        try:
+            head = present.header(conn, app.state.now())
+        finally:
+            if own:
+                conn.close()
         ctx = {
+            "head": head,
             "nav": nav,
             "msg": request.query_params.get("msg", "")[:300],
             "err": request.query_params.get("err", "")[:300],
@@ -115,11 +148,14 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None) -> 
 
     @app.get("/", response_class=HTMLResponse)
     def today_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-        return render(request, "today.html", present.build_today(conn, app.state.now()), nav="today")
+        return render(request, "today.html", present.build_today(conn, app.state.now()), nav="today", conn=conn)
 
     @app.get("/health", response_class=PlainTextResponse)
-    def health():
-        return "ok\nlast run: none (Phase 1 has no run)\n"
+    def health(conn: sqlite3.Connection = Depends(get_conn)):
+        last = views.last_run(conn)
+        snap = views.current_snapshot(conn)
+        return (f"ok\nlast run: {last['result'] + ' ' + last['started_at'] if last else 'none'}\n"
+                f"snapshot: {snap['created_at'] if snap else 'none'}\n")
 
     @app.get("/projects/new", response_class=HTMLResponse)
     def new_project_view(request: Request):
@@ -128,10 +164,10 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None) -> 
     @app.get("/p/{key}", response_class=HTMLResponse)
     def project_view(request: Request, key: str, tab: str = "overview", conn: sqlite3.Connection = Depends(get_conn)):
         project = project_or_404(conn, key)
-        if tab not in ("overview", "gates", "tasks", "holidays"):
+        if tab not in ("overview", "gates", "tasks", "sources", "reading", "holidays"):
             tab = "overview"
         ctx = present.build_project(conn, project, app.state.now())
-        return render(request, "project.html", {**ctx, "tab": tab}, nav="project")
+        return render(request, "project.html", {**ctx, "tab": tab}, nav="project", conn=conn)
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
@@ -142,17 +178,36 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None) -> 
             "people": hand.list_people(conn),
             "archived": hand.list_projects(conn, ("ARCHIVED",)),
             "today": present.full_date(present.today(conn, app.state.now())),
+            "run_time": hand.get_setting(conn, "run_time", "07:00"),
+            "review_wait_days": hand.get_setting(conn, "review_wait_days", "2"),
+            "stale_input_days": hand.get_setting(conn, "stale_input_days", "3"),
+            "unmatched": views.unmatched_names(conn, (views.current_snapshot(conn) or {"id": None})["id"]),
+            "aliases": conn.execute("SELECT a.*, p.display_name FROM person_alias a JOIN person p ON p.id = a.person_id ORDER BY p.display_name, a.kind").fetchall(),
         }
-        return render(request, "settings.html", ctx, nav="settings")
+        return render(request, "settings.html", ctx, nav="settings", conn=conn)
 
     # ------------------------------------------------------------ projects
 
     @app.post("/projects")
     async def create_project(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
         def do(f):
-            hand.create_project(conn, f.get("key"), f.get("name"), f.get("description"), f.get("scope_note"))
-            key = str(f.get("key", "")).strip().upper()
-            return "Project added. Now add its first gate.", f"/p/{key}?tab=gates"
+            locations = [line.strip() for line in str(f.get("sources", "")).splitlines() if line.strip()]
+            if not locations:
+                hand.create_project(conn, f.get("key"), f.get("name"), f.get("description"), f.get("scope_note"))
+                key = str(f.get("key", "")).strip().upper()
+                return "Project added. Now add its first gate.", f"/p/{key}?tab=gates"
+            # With sources: the onboarding agent proposes the setup (Design §3-4).
+            from ..data.db import transaction
+
+            with transaction(conn):
+                first = hand.suggest_source_key(hand._source_location(locations[0])[0])
+                name = str(f.get("name") or "").strip() or first
+                key = str(f.get("key") or "").strip().upper() or hand.unique_project_key(conn, first)
+                pid = hand.create_project(conn, key, name, f.get("description"), f.get("scope_note"))
+                for loc in locations:
+                    hand.add_source(conn, pid, loc)
+            app.state.spawn(["onboard", "--project", key])
+            return "Project added. The onboarding agent is reading its sources.", f"/p/{key}/onboarding?after=0"
 
         return await act(request, "/projects/new", do)
 
@@ -408,5 +463,228 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None) -> 
             return "Name saved."
 
         return await act(request, "/settings", do)
+
+    # ------------------------------------------------------------ Phase 2: run, views of the snapshot
+
+    def pick_project(conn: sqlite3.Connection, key: str | None) -> sqlite3.Row | None:
+        if key:
+            return hand.get_project(conn, key)
+        projects = hand.list_projects(conn)
+        return projects[0] if projects else None
+
+    @app.post("/run")
+    async def run_now(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        def do(f):
+            if views.running(conn):
+                raise InputError("A run or onboarding is in progress. Wait for it to end.")
+            key = str(f.get("project") or "").strip()
+            if key and hand.get_project(conn, key) is None:
+                raise InputError(f"There is no project {key}.")
+            app.state.spawn(["run", "--trigger", "hand", *(["--project", key] if key else [])])
+            return "Run started. This page refreshes until it ends.", "/runs"
+
+        return await act(request, "/runs", do)
+
+    @app.get("/runs", response_class=HTMLResponse)
+    def runs_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        tz = present.zone(conn)
+        now_ = app.state.now()
+        items = views.runs(conn)
+        ids = [r["id"] for r in items]
+        srcs, probs = views.run_sources(conn, ids), views.run_problems(conn, ids)
+        rows = []
+        for r in items:
+            took = ""
+            if r["ended_at"]:
+                secs = int((present.local_stamp(r["ended_at"], tz) - present.local_stamp(r["started_at"], tz)).total_seconds())
+                took = f"{secs // 60} min {secs % 60:02d} s" if secs >= 60 else f"{secs} s"
+            rows.append({"row": r, "when": present.when_text(r["started_at"], tz, now_), "took": took, "sources": srcs[r["id"]],
+                         "problems": probs[r["id"]], "counts": views.run_counts(conn, r["id"]), "look": present.RUN_RESULT[r["result"]]})
+        projects = hand.list_projects(conn)
+        return render(request, "runs.html", {"rows": rows, "projects": projects}, nav="runs", conn=conn)
+
+    @app.get("/units", response_class=HTMLResponse)
+    def units_view(request: Request, project: str | None = None, conn: sqlite3.Connection = Depends(get_conn)):
+        candidates = [p for p in hand.list_projects(conn) if views.facts(conn, (views.current_snapshot(conn) or {"id": None})["id"], p["id"], "unit.exists")]
+        chosen = hand.get_project(conn, project) if project else (candidates[0] if candidates else None)
+        ctx = present.build_units(conn, chosen) if chosen else {"project": None, "rows": []}
+        return render(request, "units.html", {**ctx, "candidates": candidates}, nav="units", conn=conn)
+
+    @app.get("/timeline", response_class=HTMLResponse)
+    def timeline_view(request: Request, project: str | None = None, gate: str = "", owner: str = "", status: str = "",
+                      late: str = "", view: str = "chart", conn: sqlite3.Connection = Depends(get_conn)):
+        chosen = pick_project(conn, project)
+        if chosen is None:
+            return render(request, "timeline.html", {"project": None, "projects": []}, nav="timeline", conn=conn)
+        day = present.today(conn, app.state.now())
+        tasks = present.timeline_tasks(conn, chosen, day)
+        owners = sorted({t["owner"] for t in tasks if t["owner"]})
+        shown = [t for t in tasks if (not gate or t["gate"] == gate) and (not owner or t["owner"] == owner)
+                 and (not status or t["status"] == status) and (not late or t["late"])]
+        gates = hand.list_gates(conn, chosen["id"])
+        ctx = {"project": chosen, "projects": hand.list_projects(conn), "tasks": shown, "all_count": len(tasks), "gates": gates,
+               "owners": owners, "f": {"gate": gate, "owner": owner, "status": status, "late": late, "view": view},
+               "svg": present.timeline_svg(shown, [g for g in gates if not gate or g["key"] == gate], day), "repos": present.repos_of(conn),
+               "src_link": present.src_link}
+        return render(request, "timeline.html", ctx, nav="timeline", conn=conn)
+
+    # ------------------------------------------------------------ sources and reading settings
+
+    @app.post("/p/{key}/sources")
+    async def source_add(request: Request, key: str, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            hand.add_source(conn, project["id"], f.get("location"), key=f.get("key"), role=f.get("role") or "DOCS", branches=f.get("branches"))
+            return "Source added. Use \"Look for new setup\" to let the agent read it."
+
+        return await act(request, f"/p/{key}?tab=sources", do)
+
+    @app.post("/p/{key}/sources/{sid}")
+    async def source_edit(request: Request, key: str, sid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            hand.get_source(conn, project["id"], sid)
+            hand.update_source(conn, project["id"], sid, role=f.get("role"), branches=f.get("branches"), enabled=f.get("enabled", "0"))
+            return "Source saved."
+
+        return await act(request, f"/p/{key}?tab=sources", do)
+
+    @app.post("/p/{key}/sources/{sid}/remove")
+    async def source_remove(request: Request, key: str, sid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            hand.get_source(conn, project["id"], sid)
+            hand.remove_source(conn, project["id"], sid)
+            return "Source removed. Its mirror stays in the data directory until you delete it."
+
+        return await act(request, f"/p/{key}?tab=sources", do)
+
+    @app.post("/p/{key}/reading")
+    async def reading_save(request: Request, key: str, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            hand.set_reading(conn, project["id"], wbs_source=f.get("wbs_source"), wbs_path=f.get("wbs_path"), wbs_mapping=f.get("wbs_mapping"),
+                             dashboard_source=f.get("dashboard_source"), dashboard_path=f.get("dashboard_path"),
+                             branch_pattern=f.get("branch_pattern"), task_key_pattern=f.get("task_key_pattern"),
+                             prose_reading=f.get("prose_reading", "0"))
+            return "Reading settings saved. They apply from the next run."
+
+        return await act(request, f"/p/{key}?tab=reading", do)
+
+    # ------------------------------------------------------------ evidence links and names
+
+    @app.post("/p/{key}/items/{iid}/links")
+    async def link_add(request: Request, key: str, iid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            item = hand.get_item(conn, project["id"], iid)
+            hand.add_link(conn, item["id"], f.get("kind"), f.get("value"))
+            return "Link added. The next run follows it.", f"/p/{key}?tab=gates#g-{item['gate_id']}"
+
+        return await act(request, f"/p/{key}?tab=gates", do)
+
+    @app.post("/p/{key}/links/{lid}/remove")
+    async def link_remove(request: Request, key: str, lid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            hand.remove_link(conn, project["id"], lid)
+            return "Link removed."
+
+        return await act(request, f"/p/{key}?tab=gates", do)
+
+    @app.post("/settings/names")
+    async def name_attach(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        def do(f):
+            hand.attach_name(conn, f.get("value"), f.get("kind"), f.get("person"))
+            return "Name attached. The next run matches it."
+
+        return await act(request, "/settings", do)
+
+    @app.post("/settings/run")
+    async def run_settings(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        def do(f):
+            import re as _re
+
+            run_time = str(f.get("run_time", "07:00")).strip()
+            if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", run_time):
+                raise InputError("Run time must be like 07:00.")
+            wait = str(f.get("review_wait_days", "2")).strip()
+            stale = str(f.get("stale_input_days", "3")).strip()
+            if not (wait.isdigit() and stale.isdigit() and 0 < int(wait) < 60 and 0 < int(stale) < 60):
+                raise InputError("The thresholds are whole numbers of working days, 1 to 59.")
+            hand.set_setting(conn, "run_time", run_time)
+            hand.set_setting(conn, "review_wait_days", wait)
+            hand.set_setting(conn, "stale_input_days", stale)
+            return "Run settings saved. The timer itself is set where PM Dash is installed."
+
+        return await act(request, "/settings", do)
+
+    # ------------------------------------------------------------ Phase 2b: onboarding (Design §3-4, V-9)
+
+    @app.post("/p/{key}/onboard")
+    async def onboard_start(request: Request, key: str, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            if not [s for s in hand.list_sources(conn, project["id"]) if s["enabled"]]:
+                raise InputError("Add a source first: a GitHub URL or a git repository on this machine.")
+            if views.running(conn):
+                raise InputError("A run or onboarding is in progress. Wait for it to end.")
+            latest = views.onboarding(conn, project["id"])
+            app.state.spawn(["onboard", "--project", key])
+            return "The onboarding agent is reading the sources.", f"/p/{key}/onboarding?after={latest['id'] if latest else 0}"
+
+        return await act(request, f"/p/{key}?tab=sources", do)
+
+    @app.get("/p/{key}/onboarding", response_class=HTMLResponse)
+    @app.get("/p/{key}/onboarding/{oid}", response_class=HTMLResponse)
+    def onboarding_view(request: Request, key: str, oid: int | None = None, after: int | None = None,
+                        conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+        ob = views.onboarding(conn, project["id"], oid)
+        if after is not None and oid is None and (ob is None or ob["id"] <= after):
+            # The new onboarding process has not written its row yet (Part 1 §2-1).
+            return render(request, "onboarding.html", {"project": project, "onboarding": None, "starting": after,
+                                                       "tile": present.COLOUR_TILE[project["colour"]]}, nav="project", conn=conn)
+        if ob is None:
+            return render(request, "onboarding.html", {"project": project, "onboarding": None, "tile": present.COLOUR_TILE[project["colour"]]},
+                          nav="project", conn=conn)
+        return render(request, "onboarding.html", present.build_review(conn, project, ob, app.state.now()), nav="project", conn=conn)
+
+    @app.post("/p/{key}/proposals/{pid}")
+    async def proposal_decide(request: Request, key: str, pid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            edits = {k[5:]: v for k, v in f.items() if k.startswith("edit_")}
+            return hand.decide_proposal(conn, project["id"], pid, f.get("action"), edits)
+
+        return await act(request, f"/p/{key}/onboarding", do)
+
+    @app.post("/p/{key}/onboarding/{oid}/accept-kind")
+    async def proposal_accept_kind(request: Request, key: str, oid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+
+        def do(f):
+            kind = str(f.get("kind", ""))
+            if kind in ("GATE", "EVIDENCE", "PROJECT"):
+                raise InputError("Gates, evidence and the project are accepted one by one (R-O4).")
+            from ..data.db import transaction
+
+            n = 0
+            with transaction(conn):
+                for p in views.proposals_with_decisions(conn, oid):
+                    if p["kind"] == kind and p["open"] and p["read_by"] == "PROGRAM" and p["project_id"] == project["id"]:
+                        hand.decide_proposal(conn, project["id"], p["id"], "accept")
+                        n += 1
+            return f"Accepted {n} {present.KIND_WORD.get(kind, kind).lower()}."
+
+        return await act(request, f"/p/{key}/onboarding/{oid}", do)
 
     return app

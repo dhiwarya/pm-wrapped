@@ -1,15 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Add project · pm·dash{% endblock %}
 {% block main %}
-<div class="vhead"><h1>Add project</h1><p>Step 1 of 2: name and key. Next you add its gates.</p></div>
-<form class="tile t-surface form narrow" method="post" action="/projects">
-  <input type="hidden" name="back" value="/projects/new">
-  <div class="field"><label for="name">Name</label><input id="name" name="name" required maxlength="120" placeholder="e.g. Billing migration" autofocus></div>
-  <div class="field"><label for="key">Key</label><input id="key" name="key" required maxlength="12" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,11}" placeholder="e.g. BILL" autocapitalize="characters">
-    <p class="hint">2 to 12 letters, digits or dashes. It appears in links and never changes.</p></div>
-  <div class="field"><label for="description">Description</label><textarea id="description" name="description" rows="2" maxlength="2000"></textarea></div>
-  <div class="field"><label for="scope_note">Scope</label><textarea id="scope_note" name="scope_note" rows="3" maxlength="4000" placeholder="What is in and out of this project"></textarea></div>
-  <p class="hint">Sources (git repositories) come with reading by program. For now the project is kept by hand.</p>
-  <div class="row-end"><a class="btn" href="/">Cancel</a><button class="btn primary" type="submit">Add project</button></div>
-</form>
+<div class="vhead"><h1>Add project</h1><p>Point PM Dash at its repositories, or keep it by hand.</p></div>
+<div class="bento">
+  <form class="tile t-lime s7 form" method="post" action="/projects">
+    <div class="eyebrow">With sources · recommended</div>
+    <h3 class="big-line">The agent proposes the setup.</h3>
+    <input type="hidden" name="back" value="/projects/new">
+    <div class="field"><label for="src">Repositories, one per line</label>
+      <textarea id="src" name="sources" rows="3" required placeholder="https://github.com/owner/repo&#10;/home/me/code/another-repo"></textarea>
+      <p class="hint">A GitHub URL, or a path to a git repository on this machine. A plain folder is refused: make it a git repository first.</p></div>
+    <div class="grid3">
+      <div class="field span2"><label for="sn">Name (optional)</label><input id="sn" name="name" maxlength="120" placeholder="proposed from the README"></div>
+      <div class="field"><label for="sk">Key (optional)</label><input id="sk" name="key" maxlength="12" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,11}" placeholder="from the repo name"></div>
+    </div>
+    <p class="hint">The agent reads the repositories and proposes the scope, gates and dates, evidence, the WBS mapping, patterns and people. You accept each one. Its model call has a money limit set in Settings.</p>
+    <div class="row-end"><button class="pill" type="submit">Add and read</button></div>
+  </form>
+  <form class="tile t-surface s5 form" method="post" action="/projects">
+    <div class="eyebrow">By hand</div>
+    <input type="hidden" name="back" value="/projects/new">
+    <div class="field"><label for="name">Name</label><input id="name" name="name" required maxlength="120" placeholder="e.g. Office move"></div>
+    <div class="field"><label for="key">Key</label><input id="key" name="key" required maxlength="12" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,11}" placeholder="e.g. OFFICE" autocapitalize="characters">
+      <p class="hint">2 to 12 letters, digits or dashes. It appears in links and never changes.</p></div>
+    <div class="field"><label for="scope_note">Scope</label><textarea id="scope_note" name="scope_note" rows="3" maxlength="4000"></textarea></div>
+    <div class="row-end"><button class="btn primary" type="submit">Add project</button></div>
+  </form>
+</div>
 {% endblock %}

@@ -506,3 +506,302 @@ def remove_holiday(conn: sqlite3.Connection, holiday_id: int, project_id: int | 
         conn.execute(
             "DELETE FROM holiday WHERE id = ? AND ifnull(project_id, 0) = ifnull(?, 0)", (holiday_id, project_id)
         )
+
+
+# ---------------------------------------------------------------- sources (Phase 2)
+
+SOURCE_ROLES = ("DOCS", "CODE", "OTHER")
+SOURCE_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+GITHUB_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?")
+
+
+def _source_location(value: object) -> tuple[str, str]:
+    """(git_url, github_repo) from a GitHub URL, any https git URL, or an absolute host path (F1 = A)."""
+    text = _text(value, "Repository", required=True, max_len=500)
+    m = GITHUB_URL_RE.fullmatch(text)
+    if m:
+        return f"https://github.com/{m.group(1)}/{m.group(2)}.git", f"{m.group(1)}/{m.group(2)}"
+    if text.startswith("https://"):
+        return text, ""
+    if text.startswith("/"):
+        return text.rstrip("/") or "/", ""
+    raise InputError("A source is a GitHub URL, an https:// git URL, or an absolute path to a git repository on this machine.")
+
+
+def suggest_source_key(git_url: str) -> str:
+    name = git_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    key = re.sub(r"[^A-Za-z0-9._-]", "-", name).strip("-._") or "source"
+    return key[:40]
+
+
+def list_sources(conn: sqlite3.Connection, project_id: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM source WHERE project_id = ? ORDER BY id", (project_id,)).fetchall()
+
+
+def get_source(conn: sqlite3.Connection, project_id: int, source_id: int) -> sqlite3.Row:
+    return _one(conn, "SELECT * FROM source WHERE id = ? AND project_id = ?", (source_id, project_id))
+
+
+def add_source(conn: sqlite3.Connection, project_id: int, location: object, *, key: object = "", role: object = "DOCS",
+               branches: object = "") -> int:
+    git_url, repo = _source_location(location)
+    role_value = _choice(role or "DOCS", SOURCE_ROLES, "Role")
+    branch_list = ", ".join(b for b in (x.strip() for x in _text(branches, "Branches", max_len=300).split(",")) if b)
+    with transaction(conn):
+        if conn.execute("SELECT 1 FROM source WHERE project_id = ? AND git_url = ?", (project_id, git_url)).fetchone():
+            raise InputError("This repository is a source of the project already.")
+        key_text = _text(key, "Source key", max_len=40) or suggest_source_key(git_url)
+        base, n = key_text, 2
+        while conn.execute("SELECT 1 FROM source WHERE project_id = ? AND key = ?", (project_id, key_text)).fetchone():
+            key_text, n = f"{base}-{n}"[:40], n + 1
+        if not SOURCE_KEY_RE.fullmatch(key_text):
+            raise InputError("Source key must be letters, digits, dots, dashes or underscores.")
+        return int(conn.execute(
+            "INSERT INTO source(project_id, key, role, git_url, github_repo, branches) VALUES (?, ?, ?, ?, ?, ?)",
+            (project_id, key_text, role_value, git_url, repo, branch_list),
+        ).lastrowid)
+
+
+def update_source(conn: sqlite3.Connection, project_id: int, source_id: int, *, role: object, branches: object, enabled: object) -> None:
+    role_value = _choice(role, SOURCE_ROLES, "Role")
+    branch_list = ", ".join(b for b in (x.strip() for x in _text(branches, "Branches", max_len=300).split(",")) if b)
+    with transaction(conn):
+        conn.execute("UPDATE source SET role = ?, branches = ?, enabled = ? WHERE id = ? AND project_id = ?",
+                     (role_value, branch_list, 1 if str(enabled) in ("1", "on", "true") else 0, source_id, project_id))
+
+
+def remove_source(conn: sqlite3.Connection, project_id: int, source_id: int) -> None:
+    with transaction(conn):
+        conn.execute("DELETE FROM source WHERE id = ? AND project_id = ?", (source_id, project_id))
+
+
+def unique_project_key(conn: sqlite3.Connection, wanted: str) -> str:
+    base = re.sub(r"[^A-Z0-9-]", "", wanted.upper())[:12] or "PROJ"
+    if len(base) < 2:
+        base = (base + "PROJ")[:12]
+    key, n = base, 2
+    while conn.execute("SELECT 1 FROM project WHERE key = ?", (key,)).fetchone():
+        suffix = str(n)
+        key, n = base[: 12 - len(suffix)] + suffix, n + 1
+    return key
+
+
+# ---------------------------------------------------------------- reading settings of a project
+
+def project_setting(conn: sqlite3.Connection, project_id: int) -> sqlite3.Row:
+    return _one(conn, "SELECT * FROM project_setting WHERE project_id = ?", (project_id,))
+
+
+def _source_id_or_none(conn: sqlite3.Connection, project_id: int, value: object) -> int | None:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None
+    if not text.isdigit() or not conn.execute("SELECT 1 FROM source WHERE id = ? AND project_id = ?", (int(text), project_id)).fetchone():
+        raise InputError("Pick one of the project's sources.")
+    return int(text)
+
+
+def _relative_path(value: object, label: str) -> str:
+    path = _text(value, label, max_len=300).lstrip("./") if value else ""
+    if path.startswith("/") or ".." in path.split("/"):
+        raise InputError(f"{label} must be a path inside the repository.")
+    return path
+
+
+def set_reading(conn: sqlite3.Connection, project_id: int, *, wbs_source: object = "", wbs_path: object = "", wbs_mapping: object = "",
+                dashboard_source: object = "", dashboard_path: object = "", branch_pattern: object = "", task_key_pattern: object = "",
+                prose_reading: object = "1") -> None:
+    mapping = _text(wbs_mapping, "Column mapping", max_len=8000)
+    if mapping:
+        import json
+
+        try:
+            parsed = json.loads(mapping)
+        except json.JSONDecodeError:
+            raise InputError("The column mapping is not valid JSON.") from None
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("columns"), dict):
+            raise InputError("The column mapping needs a \"columns\" object.")
+    pattern = _text(task_key_pattern, "Task-key pattern", max_len=200)
+    if pattern:
+        try:
+            re.compile(pattern)
+        except re.error:
+            raise InputError("The task-key pattern is not a valid regular expression.") from None
+    values = {
+        "wbs_source_id": _source_id_or_none(conn, project_id, wbs_source),
+        "wbs_path": _relative_path(wbs_path, "WBS path"),
+        "wbs_mapping": mapping,
+        "dashboard_source_id": _source_id_or_none(conn, project_id, dashboard_source),
+        "dashboard_json_path": _relative_path(dashboard_path, "Dashboard file path"),
+        "branch_unit_pattern": _text(branch_pattern, "Branch pattern", max_len=200),
+        "task_key_pattern": pattern,
+        "prose_reading": 1 if str(prose_reading) in ("1", "on", "true") else 0,
+        "project_id": project_id,
+    }
+    if values["wbs_path"] and values["wbs_source_id"] is None:
+        raise InputError("Pick the source that holds the WBS file.")
+    if values["dashboard_json_path"] and values["dashboard_source_id"] is None:
+        raise InputError("Pick the source that holds the dashboard file.")
+    with transaction(conn):
+        conn.execute(
+            "UPDATE project_setting SET wbs_source_id = :wbs_source_id, wbs_path = :wbs_path, wbs_mapping = :wbs_mapping, "
+            "dashboard_source_id = :dashboard_source_id, dashboard_json_path = :dashboard_json_path, "
+            "branch_unit_pattern = :branch_unit_pattern, task_key_pattern = :task_key_pattern, prose_reading = :prose_reading "
+            "WHERE project_id = :project_id",
+            values,
+        )
+
+
+def _update_setting_fields(conn: sqlite3.Connection, project_id: int, **fields: object) -> None:
+    allowed = {"wbs_source_id", "wbs_path", "wbs_mapping", "dashboard_source_id", "dashboard_json_path", "branch_unit_pattern", "task_key_pattern"}
+    assert set(fields) <= allowed
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE project_setting SET {sets} WHERE project_id = ?", (*fields.values(), project_id))
+
+
+# ---------------------------------------------------------------- evidence links and aliases
+
+LINK_KINDS = ("TASK", "TASK_PREFIX", "UNIT", "PR", "PR_SEARCH")
+
+
+def list_links(conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[sqlite3.Row]]:
+    out: dict[int, list[sqlite3.Row]] = {i: [] for i in item_ids}
+    if item_ids:
+        marks = ",".join("?" * len(item_ids))
+        for row in conn.execute(f"SELECT * FROM evidence_link WHERE evidence_item_id IN ({marks}) ORDER BY id", tuple(item_ids)):
+            out[row["evidence_item_id"]].append(row)
+    return out
+
+
+def add_link(conn: sqlite3.Connection, item_id: int, kind: object, value: object) -> int:
+    kind_value = _choice(kind, LINK_KINDS, "Link kind")
+    text = _text(value, "Link value", required=True, max_len=200)
+    with transaction(conn):
+        return int(conn.execute("INSERT INTO evidence_link(evidence_item_id, kind, value) VALUES (?, ?, ?)",
+                                (item_id, kind_value, text)).lastrowid)
+
+
+def remove_link(conn: sqlite3.Connection, project_id: int, link_id: int) -> None:
+    with transaction(conn):
+        conn.execute(
+            "DELETE FROM evidence_link WHERE id = ? AND evidence_item_id IN "
+            "(SELECT i.id FROM evidence_item i JOIN gate g ON g.id = i.gate_id WHERE g.project_id = ?)",
+            (link_id, project_id),
+        )
+
+
+def add_alias(conn: sqlite3.Connection, person_id: int, kind: object, value: object) -> None:
+    kind_value = _choice(kind, ("GITHUB", "GIT", "DOC", "WBS"), "Alias kind")
+    text = _text(value, "Alias", required=True, max_len=200)
+    with transaction(conn):
+        clash = conn.execute("SELECT person_id FROM person_alias WHERE kind = ? AND value = ? COLLATE NOCASE", (kind_value, text)).fetchone()
+        if clash and clash["person_id"] != person_id:
+            raise InputError(f"{text} belongs to another person already.")
+        if not clash:
+            conn.execute("INSERT INTO person_alias(person_id, kind, value) VALUES (?, ?, ?)", (person_id, kind_value, text))
+
+
+def attach_name(conn: sqlite3.Connection, name: object, kind: object, person_name: object) -> None:
+    """Attach a name the run could not match to a person, new or existing (Design §6-4)."""
+    with transaction(conn):
+        pid = _person_id(conn, person_name)
+        if pid is None:
+            raise InputError("Name the person to attach it to.")
+        add_alias(conn, pid, kind, name)
+
+
+# ---------------------------------------------------------------- onboarding decisions (Design §3-4, Part 2 §6-7)
+
+def _proposal(conn: sqlite3.Connection, project_id: int, proposal_id: int) -> sqlite3.Row:
+    return _one(conn, "SELECT * FROM onboarding_proposal WHERE id = ? AND project_id = ?", (proposal_id, project_id))
+
+
+def proposal_decision(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM onboarding_decision WHERE proposal_id = ? ORDER BY id DESC LIMIT 1", (proposal_id,)).fetchone()
+
+
+def decide_proposal(conn: sqlite3.Connection, project_id: int, proposal_id: int, action: object, edits: dict | None = None) -> str:
+    """Accept, accept with edits, reject, or undo a rejection. Accepting writes hand rows and the
+    decision in one transaction (R-O1). Returns a message for the user."""
+    import json
+
+    action_value = _choice(action, ("accept", "edit", "reject", "undo"), "Action")
+    with transaction(conn):
+        p = _proposal(conn, project_id, proposal_id)
+        last = proposal_decision(conn, proposal_id)
+        if action_value == "undo":
+            if not last or last["decision"] != "REJECTED":
+                raise InputError("Only a rejection can be undone.")
+            conn.execute("INSERT INTO onboarding_decision(proposal_id, decision) VALUES (?, 'UNDONE')", (proposal_id,))
+            return "Rejection undone."
+        if last and last["decision"] in ("ACCEPTED", "EDITED"):
+            raise InputError("This proposal was accepted already.")
+        if action_value == "reject":
+            conn.execute("INSERT INTO onboarding_decision(proposal_id, decision) VALUES (?, 'REJECTED')", (proposal_id,))
+            return "Rejected."
+        payload = json.loads(p["payload"])
+        if action_value == "edit":
+            payload.update({k: v for k, v in (edits or {}).items() if k in payload})
+        created = _apply_proposal(conn, project_id, p["kind"], payload)
+        conn.execute(
+            "INSERT INTO onboarding_decision(proposal_id, decision, edited_payload, created_rows) VALUES (?, ?, ?, ?)",
+            (proposal_id, "EDITED" if action_value == "edit" else "ACCEPTED",
+             json.dumps(payload, ensure_ascii=False) if action_value == "edit" else "", " ".join(created)),
+        )
+        return "Accepted." if action_value == "accept" else "Accepted with your edits."
+
+
+def _apply_proposal(conn: sqlite3.Connection, project_id: int, kind: str, payload: dict) -> list[str]:
+    import json
+
+    if kind == "PROJECT":
+        current = _one(conn, "SELECT * FROM project WHERE id = ?", (project_id,))
+        update_project(conn, project_id, payload.get("name") or current["name"],
+                       payload.get("description") or current["description"], payload.get("scope_note") or current["scope_note"])
+        return [f"project:{project_id}"]
+    if kind == "GATE":
+        gid = create_gate(conn, project_id, payload.get("key"), payload.get("name"), payload.get("date"), payload.get("description", ""))
+        return [f"gate:{gid}"]
+    if kind == "EVIDENCE":
+        gate = conn.execute("SELECT id FROM gate WHERE project_id = ? AND key = ? AND closed_at IS NULL",
+                            (project_id, str(payload.get("gate_key", "")))).fetchone()
+        if gate is None:
+            raise InputError(f"Accept gate {payload.get('gate_key')} first, or edit this item to name an open gate.")
+        return [f"evidence_item:{create_item(conn, gate['id'], payload.get('text'))}"]
+    if kind in ("WBS", "DASHBOARD_FILE"):
+        source = conn.execute("SELECT id FROM source WHERE project_id = ? AND key = ?", (project_id, str(payload.get("source_key", "")))).fetchone()
+        if source is None:
+            raise InputError("The source of this file is no longer in the project.")
+        path = _relative_path(payload.get("path"), "Path")
+        if kind == "WBS":
+            mapping = payload.get("mapping")
+            _update_setting_fields(conn, project_id, wbs_source_id=source["id"], wbs_path=path,
+                                   wbs_mapping=mapping if isinstance(mapping, str) else json.dumps(mapping))
+        else:
+            _update_setting_fields(conn, project_id, dashboard_source_id=source["id"], dashboard_json_path=path)
+        return [f"project_setting:{project_id}"]
+    if kind == "PATTERN":
+        which = payload.get("which")
+        pattern = _text(payload.get("pattern"), "Pattern", required=True, max_len=200)
+        if which == "TASK_KEY":
+            try:
+                re.compile(pattern)
+            except re.error:
+                raise InputError("The task-key pattern is not a valid regular expression.") from None
+            _update_setting_fields(conn, project_id, task_key_pattern=pattern)
+        elif which == "BRANCH_UNIT":
+            _update_setting_fields(conn, project_id, branch_unit_pattern=pattern)
+        else:
+            raise InputError("Unknown pattern kind.")
+        return [f"project_setting:{project_id}"]
+    if kind == "PERSON":
+        pid = _person_id(conn, payload.get("display_name"))
+        if pid is None:
+            raise InputError("A person needs a name.")
+        for alias in payload.get("aliases", []) or []:
+            if isinstance(alias, dict) and alias.get("value"):
+                add_alias(conn, pid, alias.get("kind", "DOC"), alias["value"])
+        return [f"person:{pid}"]
+    if kind == "HOLIDAY":
+        return [f"holiday:{add_holiday(conn, payload.get('date'), payload.get('label', ''), project_id)}"]
+    raise InputError("Unknown proposal kind.")

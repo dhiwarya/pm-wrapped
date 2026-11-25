@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_ui.html" import srclink %}
+{% block title %}Units · pm·dash{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Units</h1><p>{% if project %}{{ project.name }} · where each unit is in AI-DLC{% else %}AI-DLC projects only{% endif %}</p>
+  <span class="spacer"></span>
+  {% if candidates|length > 1 %}
+  <form class="inline" method="get" action="/units"><label class="sr" for="up">Project</label>
+    <select id="up" name="project">{% for c in candidates %}<option value="{{ c.key }}" {% if project and c.key == project.key %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
+    <button class="btn" type="submit">Show</button></form>
+  {% endif %}
+</div>
+{% if not project or not rows %}
+<section class="tile t-night empty"><div class="eyebrow">No units</div><h2>No AI-DLC project has been read yet.</h2>
+  <p>A project shows here when a run finds <code>aidlc-docs/aidlc-state.md</code> in one of its DOCS sources.</p></section>
+{% else %}
+<div class="kpis">
+  <div class="tile t-violet kpi"><div class="eyebrow">Units</div><div class="v" data-count="{{ rows|length }}">{{ rows|length }}</div><div class="l">read from aidlc-docs</div></div>
+  <div class="tile t-lime kpi"><div class="eyebrow">In design</div><div class="v">{{ counts.design }}</div><div class="l">at least one stage started</div></div>
+  <div class="tile t-pink kpi"><div class="eyebrow">In code</div><div class="v">{{ counts.code }}</div><div class="l">code stage started</div></div>
+  <div class="tile t-butter kpi"><div class="eyebrow">Not started</div><div class="v">{{ counts.none }}</div><div class="l">no stage folder yet</div></div>
+</div>
+{% if stale %}
+<div class="tile t-red notice"><span class="ico" aria-hidden="true">!</span><span><b>Stale input.</b> {{ stale.subject_key }} says it was updated on {{ stale.value.updated[:10] }}, but the repository has commits up to {{ stale.value.newest_commit[:10] }}. Cells where it disagrees with the stage folders have a dashed outline. {{ srclink(stale_src) }}</span></div>
+{% endif %}
+<div class="tile t-night">
+  <div class="chartlg"><span><span class="ucell a sm">✓</span> approved (from the dashboard file)</span><span><span class="ucell w sm">◐</span> in work (stage folder present)</span><span><span class="ucell n sm">·</span> not started</span><span><span class="ucell flag sm">!</span> two sources disagree</span></div>
+  <div class="scroll"><table class="tbl">
+    <thead><tr><th>Unit</th><th>Lead</th>{% for s in stages %}<th class="c">{{ s.label }}</th>{% endfor %}<th class="r">Open PRs</th><th>Plan steps</th><th class="r">Blockers</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td><b class="unitname">{{ r.unit }}</b>{% if r.status %}<br><span class="d">{{ r.status }}</span>{% endif %}</td>
+        <td>{{ r.lead }}</td>
+        {% for c in r.cells %}
+        <td class="c">
+          {% if c.state == "APPROVED" %}<span class="ucell a{% if c.flag %} flag{% endif %}" title="Approved · {{ c.src.label }}">✓</span>
+          {% elif c.state == "ARTIFACT_PRESENT" %}<span class="ucell w{% if c.flag %} flag{% endif %}" title="{% if c.flag %}The folders say this stage; the dashboard file says {{ c.flag.value.dashboard }} ({{ c.flag.value.dashboard_updated[:10] }}). {% endif %}In work · {{ c.src.label }}">◐</span>
+          {% else %}<span class="ucell n" title="Not started">·</span>{% endif %}
+        </td>
+        {% endfor %}
+        <td class="r num">{{ r.prs or "" }}</td>
+        <td class="num">{% if r.plan %}<span class="bar"><span style="width:{{ (100 * r.plan.done / r.plan.total)|round|int }}%"></span></span>{{ r.plan.done }} / {{ r.plan.total }}{% else %}<span class="d">no plan yet</span>{% endif %}</td>
+        <td class="r">{% if r.blockers %}<span class="sticker xs crit"><i aria-hidden="true">!</i>{{ r.blockers }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endif %}
+{% endblock %}

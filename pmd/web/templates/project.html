@@ -1,14 +1,15 @@
 {% extends "base.html" %}
-{% from "_ui.html" import sticker, badge, blob, segbar, health_dialog %}
+{% from "_ui.html" import sticker, badge, blob, segbar, health_dialog, srclink %}
 {% set p = project %}
 {% block title %}{{ p.name }} · pm·dash{% endblock %}
 {% block main %}
 <div class="vhead">
   <h1>{{ p.name }}</h1>
-  <div class="tagrow"><span class="tag">{{ p.key }}</span><span class="tag">manual</span>{% if p.state != "ACTIVE" %}<span class="tag">{{ p.state|lower }}</span>{% endif %}</div>
+  <div class="tagrow"><span class="tag">{{ p.key }}</span><span class="tag">{{ "linked" if sources else "manual" }}</span>{% if p.state != "ACTIVE" %}<span class="tag">{{ p.state|lower }}</span>{% endif %}</div>
+  {% if open_proposals %}<a class="more hot" href="/p/{{ p.key }}/onboarding">{{ open_proposals }} setup {{ plural(open_proposals, "proposal") }} to review →</a>{% endif %}
 </div>
 <nav class="tabs" aria-label="Project">
-  {% for t, label in (("overview", "Overview"), ("gates", "Gates and evidence"), ("tasks", "Tasks"), ("holidays", "Holidays")) %}
+  {% for t, label in (("overview", "Overview"), ("gates", "Gates and evidence"), ("tasks", "Tasks"), ("sources", "Sources"), ("reading", "Reading"), ("holidays", "Holidays")) %}
   <a href="/p/{{ p.key }}?tab={{ t }}" {% if tab == t %}aria-current="page"{% endif %}>{{ label }}{% if t == "tasks" and late_count %} <span class="count">{{ late_count }} late</span>{% endif %}</a>
   {% endfor %}
 </nav>
@@ -108,6 +109,8 @@
         <span class="state"><b aria-hidden="true">{{ it.look.icon }}</b>{{ it.look.word }}</span><br>
         <span class="t">{{ i.text }}</span>
         {% if i.note or i.evidence_url %}<br><span class="d">{{ i.note }}{% if i.note and i.evidence_url %} · {% endif %}{% if i.evidence_url %}<a href="{{ i.evidence_url }}" rel="noreferrer noopener" target="_blank">evidence link</a>{% endif %}</span>{% endif %}
+        {% if it.reason %}<br><span class="d">run: {{ it.reason }}</span>{% endif %}
+        <span class="links">{% for l in it.links %}<span class="tag">{{ LINK_WORD[l.kind] }} {{ l.value }}<form method="post" action="/p/{{ p.key }}/links/{{ l.id }}/remove"><button class="x" type="submit" aria-label="Remove link {{ LINK_WORD[l.kind] }} {{ l.value }}">×</button></form></span>{% endfor %}{% if not it.links and not i.hand_state %}<span class="d">no links, so the run cannot follow this item</span>{% endif %}</span>
       </span>
       <span class="acts">
         {% if i.hand_state %}
@@ -135,6 +138,12 @@
             <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/edit">
               <div class="field"><label for="et-{{ i.id }}">Text</label><input id="et-{{ i.id }}" name="text" value="{{ i.text }}" required maxlength="500"></div>
               <button class="btn sm" type="submit">Save text</button>
+            </form>
+            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/links">
+              <div class="field"><label for="lk-{{ i.id }}">Link the run follows</label>
+                <select id="lk-{{ i.id }}" name="kind">{% for k, w in LINK_WORD.items() %}<option value="{{ k }}">{{ w }}</option>{% endfor %}</select></div>
+              <div class="field"><label for="lv-{{ i.id }}">Value</label><input id="lv-{{ i.id }}" name="value" required maxlength="200" placeholder="e.g. 1.023, 1.0, alpha, 112"></div>
+              <button class="btn sm" type="submit">Add link</button>
             </form>
             <form class="inline" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/move">
               <button class="btn sm" name="direction" value="up" type="submit" {% if loop.first %}disabled{% endif %}>Move up</button>
@@ -253,6 +262,69 @@
 {% else %}
 <p class="empty-line">No tasks yet.</p>
 {% endif %}
+{% endif %}
+
+{# ================================================================ sources #}
+{% if tab == "sources" %}
+<div class="bento">
+  <div class="tile t-surface s7">
+    <div class="eyebrow">Sources {{ badge("hand") }}</div>
+    {% if sources %}
+    <ul class="clist sources">
+      {% for s in sources %}{% set r = s.row %}
+      <li>
+        <details class="grow">
+          <summary><b>{{ r.key }}</b> <span class="tag">{{ r.role|lower }}</span>{% if not r.enabled %} <span class="tag">off</span>{% endif %}<br>
+            <span class="d">{{ r.github_repo or r.git_url }}{% if r.branches %} · {{ r.branches }}{% endif %}</span><br>
+            <span class="d">{% if s.read %}{% if s.read.ok %}last read {{ s.read.commit_sha[:7] }} ({{ s.read_when }}){% else %}last read failed: {{ s.read.error }}{% endif %}{% else %}not read yet{% endif %}</span></summary>
+          <form class="form grid3" method="post" action="/p/{{ p.key }}/sources/{{ r.id }}">
+            <div class="field"><label for="sr{{ r.id }}">Role</label><select id="sr{{ r.id }}" name="role">{% for role in SOURCE_ROLES %}<option {% if role == r.role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></div>
+            <div class="field"><label for="sb{{ r.id }}">Branches</label><input id="sb{{ r.id }}" name="branches" value="{{ r.branches }}" placeholder="default branch"></div>
+            <div class="field"><label for="se{{ r.id }}">Read it</label><select id="se{{ r.id }}" name="enabled"><option value="1" {% if r.enabled %}selected{% endif %}>Yes</option><option value="0" {% if not r.enabled %}selected{% endif %}>No</option></select></div>
+            <div class="row-end span3"><button class="btn primary" type="submit">Save source</button></div>
+          </form>
+          <form class="row-end" method="post" action="/p/{{ p.key }}/sources/{{ r.id }}/remove" data-confirm="Remove source {{ r.key }}?"><button class="btn sm danger" type="submit">Remove source</button></form>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">No sources. The project is kept by hand.</p>{% endif %}
+    <form class="form" method="post" action="/p/{{ p.key }}/sources">
+      <div class="field"><label for="sl">Add a source</label><input id="sl" name="location" required maxlength="500" placeholder="https://github.com/owner/repo  or  /home/me/code/repo"></div>
+      <div class="inline"><label for="sro">Role</label><select id="sro" name="role">{% for role in SOURCE_ROLES %}<option>{{ role }}</option>{% endfor %}</select>
+        <label for="sbr">Branches</label><input id="sbr" name="branches" placeholder="default branch"><button class="btn" type="submit">Add source</button></div>
+      <p class="hint">A path must be a git repository on this machine. PM Dash mirrors it and never touches your working copy. DOCS sources are read for AI-DLC documents, the WBS and the dashboard file.</p>
+    </form>
+  </div>
+  <div class="tile t-lime s5">
+    {{ blob("LIME") }}
+    <div class="eyebrow">Onboarding</div>
+    <h3 class="big-line">Let the agent look for new setup.</h3>
+    <p>It reads the sources and proposes gates, evidence, the WBS mapping, patterns and people that are not here yet. Nothing is stored until you accept it.</p>
+    <form method="post" action="/p/{{ p.key }}/onboard"><button class="pill" type="submit" {% if head and head.running %}disabled{% endif %}>Look for new setup</button></form>
+    {% if onboardings %}<ul class="clist">{% for o in onboardings %}<li><a href="/p/{{ p.key }}/onboarding/{{ o.id }}">Onboarding {{ o.id }}</a><span class="d">{{ o.result|lower }} · {{ o.started_at[:10] }}</span></li>{% endfor %}</ul>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ================================================================ reading settings #}
+{% if tab == "reading" %}
+{% set st = setting %}
+<form class="tile t-surface form" method="post" action="/p/{{ p.key }}/reading">
+  <div class="eyebrow">How the run reads this project {{ badge("hand") }}</div>
+  <div class="grid3">
+    <div class="field"><label for="ws">WBS source</label><select id="ws" name="wbs_source"><option value="">none</option>{% for s in sources %}<option value="{{ s.row.id }}" {% if st.wbs_source_id == s.row.id %}selected{% endif %}>{{ s.row.key }}</option>{% endfor %}</select></div>
+    <div class="field span2"><label for="wp">WBS file path</label><input id="wp" name="wbs_path" value="{{ st.wbs_path }}" placeholder="e.g. plan/wbs.csv"></div>
+    <div class="field span3"><label for="wm">WBS column mapping (JSON)</label><textarea id="wm" name="wbs_mapping" rows="8" class="mono">{{ json_pretty(st.wbs_mapping|fromjson) if st.wbs_mapping else "" }}</textarea>
+      <p class="hint">Maps PM Dash fields (key, title, gate, owner, start, finish, status, depends_on, remaining) to the file's column names, plus date_format and the status words. Onboarding proposes it.</p></div>
+    <div class="field"><label for="ds">Dashboard file source</label><select id="ds" name="dashboard_source"><option value="">none</option>{% for s in sources %}<option value="{{ s.row.id }}" {% if st.dashboard_source_id == s.row.id %}selected{% endif %}>{{ s.row.key }}</option>{% endfor %}</select></div>
+    <div class="field span2"><label for="dp">Dashboard file path</label><input id="dp" name="dashboard_path" value="{{ st.dashboard_json_path }}" placeholder="aidlc-docs/construction/dashboard/dashboard-state.json"></div>
+    <div class="field"><label for="bp">Branch-to-unit pattern</label><input id="bp" name="branch_pattern" value="{{ st.branch_unit_pattern }}" placeholder="unit/<unit>; <unit>/<topic>"></div>
+    <div class="field"><label for="tp">Task-key pattern (regular expression)</label><input id="tp" name="task_key_pattern" value="{{ st.task_key_pattern }}" class="mono" placeholder="\b\d\.\d{3}\b"></div>
+    <div class="field"><label for="pr">Prose reading by the model</label><select id="pr" name="prose_reading"><option value="1" {% if st.prose_reading %}selected{% endif %}>On</option><option value="0" {% if not st.prose_reading %}selected{% endif %}>Off: never send this project's text to the model</option></select></div>
+  </div>
+  <div class="row-end"><button class="btn primary" type="submit">Save reading settings</button></div>
+</form>
 {% endif %}
 
 {# ================================================================ holidays #}

@@ -1,12 +1,16 @@
 {% extends "base.html" %}
-{% from "_ui.html" import sticker, blob, segbar, health_dialog %}
+{% from "_ui.html" import sticker, blob, segbar, health_dialog, srclink %}
 {% block title %}Today · pm·dash{% endblock %}
 {% block main %}
 <section class="hero">
   <div class="eyebrow muted">{{ day_text }}</div>
   <h1>{{ count }} {{ plural(count, "project") }}.<br>
     <em>{% if need == 0 %}Nothing needs your call.{% else %}{{ need }} {{ "needs" if need == 1 else "need" }} your call.{% endif %}</em></h1>
-  <p>No run yet: every project is kept by hand. Reading repositories comes with the run.</p>
+  {% if snapshot %}
+  <p>Snapshot {{ snap_when }} · {{ sources_read }} {{ plural(sources_read, "source") }} read · {{ problems }} {{ plural(problems, "problem") }}{% if problems %} · <a href="/runs">see them</a>{% endif %}</p>
+  {% else %}
+  <p>No run yet. Projects with sources fill in after the first run; others are kept by hand.</p>
+  {% endif %}
 </section>
 
 {% if not blocks %}
@@ -14,7 +18,7 @@
   {{ blob("LIME") }}
   <div class="eyebrow">Start here</div>
   <h2>Add your first project.</h2>
-  <p>A project needs a name, a key and at least one gate: the dated point where it is accepted or not.</p>
+  <p>Point PM Dash at a GitHub repository or a git repository on this machine, and the onboarding agent proposes its gates, evidence and settings. Or keep it by hand.</p>
   <a class="pill" href="/projects/new">Add project</a>
 </section>
 {% endif %}
@@ -24,8 +28,13 @@
 <article class="proj">
   <div class="proj-head">
     <h2><a href="/p/{{ p.key }}">{{ p.name }}</a></h2>
-    <div class="tagrow"><span class="tag">manual</span>{% if p.state == "PAUSED" %}<span class="tag">paused</span>{% endif %}<span class="tag">{{ p.key }}</span></div>
-    <span class="spacer"></span><a class="more" href="/p/{{ p.key }}">Project page →</a>
+    <div class="tagrow">
+      {% if b.sources %}<span class="tag">linked</span>{% if b.aidlc %}<span class="tag">AI-DLC</span>{% endif %}<span class="tag">{{ b.sources }} {{ plural(b.sources, "source") }}</span>{% else %}<span class="tag">manual</span>{% endif %}
+      {% if p.state == "PAUSED" %}<span class="tag">paused</span>{% endif %}
+    </div>
+    <span class="spacer"></span>
+    {% if b.open_proposals %}<a class="more hot" href="/p/{{ p.key }}/onboarding">{{ b.open_proposals }} setup {{ plural(b.open_proposals, "proposal") }} to review →</a>{% endif %}
+    <a class="more" href="/p/{{ p.key }}">Project page →</a>
   </div>
   {% if b.next %}
   {% set g = b.next %}
@@ -70,6 +79,21 @@
         <a class="src" href="/p/{{ p.key }}?tab=gates#g-{{ g.id }}">Add evidence →</a>
       {% endif %}
     </div>
+
+    {% if b.blockers %}
+    <div class="tile t-pink s12 blockers-tile">
+      {{ blob("PINK") }}
+      <div class="eyebrow">Holding things back</div>
+      <h3 class="count-line">{{ b.blocker_count }} {{ plural(b.blocker_count, "thing") }}</h3>
+      <ol class="blockers">
+        {% for x in b.blockers %}
+        <li><span class="k">{{ x.age }}</span><span><span class="t">{{ x.detail }}</span><br>
+          <span class="d">{{ x.word }}{% if x.who %} · {{ x.who }}{% endif %}{% if x.src.label %} · {{ srclink(x.src) }}{% endif %}</span></span></li>
+        {% endfor %}
+      </ol>
+      {% if b.blocker_count > b.blockers|length %}<p class="d">and {{ b.blocker_count - b.blockers|length }} more on the <a href="/timeline?project={{ p.key }}">timeline</a></p>{% endif %}
+    </div>
+    {% endif %}
   </div>
   {{ health_dialog(p.key, g, "/") }}
   {% else %}
@@ -77,8 +101,8 @@
     <div class="tile {{ b.tile }} days s12">
       {{ blob(b.colour) }}
       <div class="eyebrow">No gate set</div>
-      <h3 class="big-line">Add a gate to see days left.</h3>
-      <a class="pill" href="/p/{{ p.key }}?tab=gates">Add a gate</a>
+      <h3 class="big-line">{% if b.open_proposals %}Review the setup the agent proposed.{% else %}Add a gate to see days left.{% endif %}</h3>
+      {% if b.open_proposals %}<a class="pill" href="/p/{{ p.key }}/onboarding">Review proposals</a>{% else %}<a class="pill" href="/p/{{ p.key }}?tab=gates">Add a gate</a>{% endif %}
     </div>
   </div>
   {% endif %}

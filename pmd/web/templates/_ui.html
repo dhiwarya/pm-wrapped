@@ -45,3 +45,8 @@
   </form>
 </dialog>
 {%- endmacro %}
+
+{# Where a fact was read (P-3): a link when the source is on GitHub, else the path and commit. #}
+{% macro srclink(src) -%}
+{% if src.url %}<a class="src" href="{{ src.url }}" target="_blank" rel="noreferrer noopener">{{ src.label }}</a>{% elif src.label %}<span class="srcpath">{{ src.label }}</span>{% endif %}
+{%- endmacro %}
