@@ -3,7 +3,7 @@
 There is no login. Instead:
 
 * the ``Host`` header must be a known name (the tailnet name or loopback);
-* when Tailscale passes the caller's login, it must be the configured owner;
+* when an owner is configured, proxied requests must carry that owner's login;
 * a changing request must come from PMD's own pages: ``Origin`` equal to the host
   and PMD's own request header, which only ``pmd.js`` adds;
 * every response carries a strict Content Security Policy.
@@ -50,7 +50,8 @@ def check(config: Config, method: str, headers: dict[str, str]) -> tuple[int, st
     if host not in config.allowed_hosts:
         return 400, "Unknown host."
     login = headers.get(IDENTITY_HEADER)
-    if login is not None and config.allowed_login and login.strip().lower() != config.allowed_login.lower():
+    proxied = host == (config.tailnet_name or "").lower() or "x-forwarded-for" in headers
+    if config.allowed_login and (proxied or login is not None) and (login or "").strip().lower() != config.allowed_login.lower():
         return 403, "This dashboard belongs to another user."
     if method.upper() not in SAFE_METHODS:
         origin = headers.get("origin", "")

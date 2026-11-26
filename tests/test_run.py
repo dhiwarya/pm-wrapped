@@ -119,13 +119,18 @@ def test_only_one_run_at_a_time(config, conn, linked):
     assert out.result == "REFUSED" and "in progress" in out.message
 
 
-def test_github_answers_become_prs_reviews_and_blockers(config, conn, linked):
+def test_github_answers_become_prs_reviews_and_blockers(config, conn, linked, client):
     conn.execute("UPDATE source SET github_repo = 'acme/widgets' WHERE id = ?", (linked["sid"],))  # test only
     secrets = config.data_dir / "secrets"
     secrets.mkdir(parents=True, mode=0o700)
     (secrets / "github-token").write_text("test-token")
     pulls = saved_pulls()
+    ready_pr = {**pulls[1]["pr"], "number": 14, "title": "Pilot notes", "head": {"ref": "pilot", "sha": "listed-sha"},
+                "html_url": "https://github.com/acme/widgets/pull/14"}
+    pulls.append({"pr": ready_pr, "reviews": [{"user": {"login": "reviewer"}, "state": "APPROVED", "commit_id": "current-sha"}]})
     by_number = {p["pr"]["number"]: p for p in pulls}
+    head_sha = "current-sha"
+    deny_checks = False
 
     def handler(request: httpx.Request):
         path, q = request.url.path, dict(request.url.params)
@@ -133,6 +138,11 @@ def test_github_answers_become_prs_reviews_and_blockers(config, conn, linked):
         if path.endswith("/pulls"):
             want = q.get("state")
             return httpx.Response(200, json=[p["pr"] for p in pulls if (p["pr"]["state"] == want)] if q.get("page") == "1" else [])
+        if path.split("/")[-2] == "pulls":
+            number = int(path.split("/")[-1])
+            pr = by_number[number]["pr"]
+            head = {"ref": "pilot", "sha": head_sha} if number == 14 else pr["head"]
+            return httpx.Response(200, json={**pr, "head": head, "mergeable": True, "mergeable_state": "clean"})
         if "/reviews" in path:
             n = int(path.split("/")[-2])
             return httpx.Response(200, json=by_number[n]["reviews"] if q.get("page") == "1" else [])
@@ -142,6 +152,9 @@ def test_github_answers_become_prs_reviews_and_blockers(config, conn, linked):
             return httpx.Response(200, json=events if q.get("page") == "1" else [])
         if path.endswith("/check-runs"):
             sha = path.split("/")[-2]
+            if deny_checks and sha == "current-sha":
+                return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+            assert sha != "listed-sha"
             return httpx.Response(200, json={"check_runs": [{"status": "completed", "conclusion": "failure" if sha == "aaa" else "success"}]})
         if path.endswith("/status"):
             return httpx.Response(200, json={"statuses": []})
@@ -160,6 +173,33 @@ def test_github_answers_become_prs_reviews_and_blockers(config, conn, linked):
     methods = {r[0] for r in conn.execute("SELECT method FROM request_log WHERE run_id = ?", (out.run_id,))}
     assert methods == {"GET"}  # acceptance point 4
     assert "test-token" not in json.dumps([dict(r) for r in conn.execute("SELECT * FROM request_log")])
+    assert prs[14]["approved_head"] and prs[14]["head_sha"] == "current-sha"
+    for page in ("/", "/pulls"):
+        html = client.get(page).text
+        assert "Ready to merge · 1" in html and "Needs attention · 2" in html
+        assert "Fix the failing checks." in html and 'href="https://github.com/acme/widgets/pull/14"' in html
+    assert "runbook 1.003" not in client.get("/pulls").text
+
+    assert run(config, now=WED, trigger="SCHEDULE", github_factory=factory).result == "OK"
+    digest = client.get("/changes").text
+    assert "Ready to merge · acme/widgets#14 · Pilot notes" in digest
+    assert "Needs attention · acme/widgets#12" in digest
+    (secrets / "github-token").unlink()
+    assert run(config, now=WED, github_factory=factory).result == "PARTIAL"
+    queue = client.get("/pulls").text
+    assert "Unverified · 3" in queue and "Ready to merge" not in queue and "Awaiting GitHub data" in queue
+    (secrets / "github-token").write_text("test-token")
+    deny_checks = True
+    outcome = run(config, now=WED, github_factory=factory)
+    assert outcome.result == "PARTIAL"
+    queue = client.get("/pulls").text
+    assert "GitHub denied access to CI results." in queue and "Ready to merge" not in queue
+    assert "Unverified · 1" in queue and "Needs attention · 2" in queue
+    deny_checks = False
+    head_sha = "newer-commit"
+    assert run(config, now=WED, github_factory=factory).result == "OK"
+    queue = client.get("/pulls").text
+    assert "Needs attention · 3" in queue and "Get approval for the latest commit." in queue
 
 
 def test_new_commits_are_read_on_the_next_run(config, conn, linked):

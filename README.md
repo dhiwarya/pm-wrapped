@@ -10,7 +10,7 @@ Code of the Project Manager Dashboard (PMD): a one-user web dashboard that answe
 | 2 | Reading by program: git mirrors, read-only GitHub client, AI-DLC, dashboard and WBS adapters, blockers, evidence states, snapshots, `pm-dash run`, Timeline, Units, Runs, stale banner | Done |
 | 2b | Onboarding: add a project from a GitHub URL or a git repository on this machine; the agent proposes the setup, you accept each item | Done |
 | 3 | Verified prose facts, gate health proposals and confirmations, Changes, weekday digest and story, Codex fallback | Done |
-| 4 | People view, gate report export, retention, backup | Not started |
+| 4 | People view, Markdown gate export, weekly snapshot retention, nightly SQLite backup and restore | Done |
 
 Not deployed yet: `deploy/` holds the systemd units for the host.
 
@@ -30,6 +30,7 @@ uv run pm-dash doctor      # checks the installation
 uv run pm-dash web         # serves http://127.0.0.1:8787
 uv run pm-dash run         # read all active projects now and publish a snapshot
 uv run pm-dash onboard --project KEY   # propose the setup of a project from its sources
+uv run pm-dash backup                  # write an online SQLite copy under the data directory
 uv run pytest              # tests
 ```
 
@@ -41,14 +42,17 @@ port = 8787
 tailnet_name = "laptop.tailXXXX.ts.net"   # the host name Tailscale serves the dashboard under
 allowed_login = "you@example.com"         # refused when Tailscale reports another login
 codex_fallback = true                     # use Codex when Claude reports a usage limit
-# codex_model = "…"                       # optional Codex model override
+# claude_model = "claude-opus-5-5"        # optional model pin
+# claude_effort = "high"
+# codex_model = "gpt-6.2-sol"              # optional model pin
+# codex_effort = "high"
 ```
 
 The server listens on the loopback address only. It is meant to be published inside a tailnet with `tailscale serve`, never on a public address. There is no login. Instead, the request guard accepts only known host names, refuses a different Tailscale login, and accepts changes only from PMD's own pages.
 
 Secrets, both optional, in `<data_dir>/secrets/` with mode 600:
 
-- `github-token`: a fine-grained, read-only token for the tracked repositories. Without it, PRs, reviews and issues are not read.
+- `github-token`: a read-only token scoped to the tracked repositories. For full private-repository CI coverage, use a GitHub App token with read access to Contents, Pull requests, Issues, Commit statuses and Checks. A fine-grained personal access token can read PRs and reviews, but GitHub limits access to check runs. PM Dash lists the affected PRs with their available review data and records the missing CI access in Runs. [GitHub Checks permissions](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
 - `claude-token`: a Claude Code token from `claude setup-token`. Without it, the CLI uses the login it already has.
 
 The onboarding agent calls the Claude Code CLI with read tools only (`--restricted --tools Read,Glob,Grep`), inside a copy of the repository without agent instruction files, with a money limit (Settings, default $2 per source).
@@ -60,6 +64,16 @@ Claude Code is the primary model for onboarding, prose reading and gate health. 
 Projects with **Prose reading** on can send project excerpts to Anthropic and, when fallback runs, to OpenAI. Set `codex_fallback = false` in the installation config to use Claude alone. Turn off **Prose reading** on a project to keep its processing local. PM Dash records Claude's reported spend. Codex usage is managed by the account the CLI uses.
 
 **Run now** refreshes Today and Changes. To generate a digest and story locally on a weekday, use `uv run pm-dash run --trigger schedule`. Each scheduled day gets one digest, stored in Changes and in `<data_dir>/digests/`. The dashboard keeps a history of previous digests. The digest stays on the host by default.
+
+## People, reports, and upkeep
+
+- **Pull requests** lists open PRs from enabled GitHub sources after each run. Today highlights PRs that need attention or look ready to merge. The weekday digest names each actionable PR with its reason and GitHub URL. Ready to merge requires an approval on the latest commit, passing CI and a clean GitHub merge status. Review the diff on GitHub before merging.
+- **People** shows pending reviews, open PRs authored, and active tasks by person. Attach unmatched repository names to a person from the same page.
+- **Gates → Download Markdown report** exports confirmed health or the outcome, evidence, linked facts, open blockers, and the snapshot's commits. Add `?include_proposal=true` to the report URL to include the current pending judgment in its own section.
+- **Settings → Retention** defaults to 90 days of full snapshots and 14 days of run and onboarding work files. Older history keeps the last snapshot in each week. Digests and hand records, including confirmations and audit history, are retained. Removing a source deletes its PM Dash mirror. Deleting a project removes the daily digests that included it, including shared digests. Earlier backups preserve their original contents.
+- **Backups** use SQLite's online backup and keep the last 14 copies in `<data_dir>/backup/`. The database contains dashboard data and digests. Mirrors, work files, and credentials live outside those copies.
+
+To verify or recover a backup, make a separate config file whose `data_dir` points to an empty directory outside Git. Then run `uv run pm-dash --config /path/to/restore.toml restore /path/to/backup.sqlite3`. Start the dashboard with the recovery config to inspect the restored copy. In-progress runs in the backup are marked failed so they can be retried.
 
 ## Layout
 

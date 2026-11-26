@@ -11,6 +11,7 @@ import sqlite3
 from datetime import date
 
 from .db import transaction
+from .retention import forget_project
 
 COLOURS = ("VIOLET", "BLUE", "TANGERINE", "PINK", "LIME")
 PROJECT_STATES = ("ACTIVE", "PAUSED", "ARCHIVED")
@@ -108,6 +109,12 @@ def get_project(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
     return conn.execute(f"{_PROJECT_SELECT} WHERE p.key = ?", (key,)).fetchone()
 
 
+def _new_id(conn, table):
+    # An archived source or project ID remains a citation in historical records.
+    return conn.execute(f"SELECT max(coalesce((SELECT max(id) FROM {table}), 0), "
+                        "coalesce((SELECT max(row_id) FROM hand_change_log WHERE table_name = ?), 0)) + 1", (table,)).fetchone()[0]
+
+
 def create_project(
     conn: sqlite3.Connection, key: object, name: object, description: object = "", scope_note: object = ""
 ) -> int:
@@ -123,10 +130,9 @@ def create_project(
         # Design §6-9: the next colour in a fixed order, kept for life. The counter
         # only grows, so deleting a project never shifts the colours of others.
         index = int(get_setting(conn, "colour_next", "0") or 0)
-        pid = conn.execute(
-            "INSERT INTO project(key, name, description, scope_note) VALUES (?, ?, ?, ?)",
-            (key_text, name_text, description_text, scope_text),
-        ).lastrowid
+        pid = _new_id(conn, "project")
+        conn.execute("INSERT INTO project(id, key, name, description, scope_note) VALUES (?, ?, ?, ?, ?)",
+                     (pid, key_text, name_text, description_text, scope_text))
         conn.execute(
             "INSERT INTO project_setting(project_id, colour) VALUES (?, ?)", (pid, COLOURS[index % len(COLOURS)])
         )
@@ -159,13 +165,15 @@ def set_project_colour(conn: sqlite3.Connection, project_id: int, colour: object
         conn.execute("UPDATE project_setting SET colour = ? WHERE project_id = ?", (value, project_id))
 
 
-def delete_project(conn: sqlite3.Connection, project_id: int, typed_key: object) -> None:
+def delete_project(conn: sqlite3.Connection, project_id: int, typed_key: object) -> list[str]:
     """Part 3 §12-4: a separate action that needs the project key typed in."""
     with transaction(conn):
-        row = _one(conn, "SELECT key FROM project WHERE id = ?", (project_id,))
+        row = _one(conn, "SELECT id, key, name FROM project WHERE id = ?", (project_id,))
         if _text(typed_key, "Key").upper() != row["key"]:
             raise InputError(f"Type the project key {row['key']} to delete the project.")
+        days = forget_project(conn, row)
         conn.execute("DELETE FROM project WHERE id = ?", (project_id,))
+        return days
 
 
 # ---------------------------------------------------------------- gates
@@ -558,10 +566,10 @@ def add_source(conn: sqlite3.Connection, project_id: int, location: object, *, k
             key_text, n = f"{base}-{n}"[:40], n + 1
         if not SOURCE_KEY_RE.fullmatch(key_text):
             raise InputError("Source key must be letters, digits, dots, dashes or underscores.")
-        return int(conn.execute(
-            "INSERT INTO source(project_id, key, role, git_url, github_repo, branches) VALUES (?, ?, ?, ?, ?, ?)",
-            (project_id, key_text, role_value, git_url, repo, branch_list),
-        ).lastrowid)
+        source_id = _new_id(conn, "source")
+        conn.execute("INSERT INTO source(id, project_id, key, role, git_url, github_repo, branches) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (source_id, project_id, key_text, role_value, git_url, repo, branch_list))
+        return source_id
 
 
 def update_source(conn: sqlite3.Connection, project_id: int, source_id: int, *, role: object, branches: object, enabled: object) -> None:
@@ -738,6 +746,8 @@ def decide_proposal(conn: sqlite3.Connection, project_id: int, proposal_id: int,
             return "Rejection undone."
         if last and last["decision"] in ("ACCEPTED", "EDITED"):
             raise InputError("This proposal was accepted already.")
+        if last and last["decision"] == "REJECTED":
+            raise InputError("This proposal was rejected already. Undo its rejection to review it again.")
         if action_value == "reject":
             conn.execute("INSERT INTO onboarding_decision(proposal_id, decision) VALUES (?, 'REJECTED')", (proposal_id,))
             return "Rejected."

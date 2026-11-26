@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..adapters import Result, aidlc, github as gh_adapter, wbs
 from ..config import Config
-from ..data import db, run as R
+from ..data import db, retention, run as R
 from ..model import provider
 from ..rules import compare
 from ..sources import git
@@ -146,8 +144,14 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory, mode
                                 marker = assessment.previous_read(conn, prev_id, s["id"])
                                 read_at = marker["read_at"] if marker else ""
                                 github_since = min(since, datetime.fromisoformat(read_at)) if since and read_at else since
-                                fetch_repo(with_github, s["github_repo"], github_dir, since=github_since)
+                                fetched = fetch_repo(with_github, s["github_repo"], github_dir, since=github_since)
+                                R.mark_github_read(conn, run_id, s["id"])
                                 github_read = True
+                                if fetched["unread_checks"]:
+                                    failed_any = project_unread = True
+                                    reason = f"{s['key']}: GitHub denied access to CI checks or commit statuses on {fetched['unread_checks']} PR(s)"
+                                    problems.append(f"{p['key']}/{reason}")
+                                    R.add_problem(conn, run_id=run_id, project_id=p["id"], stage="ST-1", adapter="github", reason=reason)
                             finally:
                                 with_github.close()
                         except (GitHubError, OSError) as exc:
@@ -222,7 +226,8 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory, mode
         with db.transaction(conn):
             if digest_text is not None:
                 R.insert(conn, "digest", {"snapshot_id": snap, "day": today.isoformat(), "text": digest_text,
-                                          "cards": json.dumps(cards), "changes": json.dumps(daily_changes)})
+                                          "cards": json.dumps(cards), "changes": json.dumps(daily_changes),
+                                          "projects": json.dumps([p["id"] for p in projects])})
             R.publish(conn, snap)
             R.end_run(conn, run_id, result_word, **R.model_totals(conn, run_id))
         published = True
@@ -241,7 +246,13 @@ def _run(conn, config, trigger, project_key, baseline, now, github_factory, mode
             R.end_run(conn, run_id, "FAILED", f"{exc.__class__.__name__}: {exc}", **R.model_totals(conn, run_id))
         raise
     finally:
-        _prune_work(config.data_dir / "runs", keep_days=14)
+        try:
+            if published:
+                retention.prune_snapshots(conn, local_now, int(R.setting(conn, "snapshot_days", str(retention.SNAPSHOT_DAYS))))
+            retention.prune_work(config.data_dir / "runs", now, int(R.setting(conn, "work_days", str(retention.WORK_DAYS))))
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            problems.append("Could not finish retention cleanup")
+            R.add_problem(conn, run_id=run_id, stage="ST-8", adapter="retention", reason=str(exc))
 
 
 def _match_people(conn, result: Result, snap: int, project_id: int) -> None:
@@ -321,15 +332,3 @@ def _compare(conn, p, snap: int, prev_id: int | None, today: date, holidays: set
                                            unit_states=rows["unit_state"], unit_stages=rows["unit_stage_state"])
         states.append({"snapshot_id": snap, "evidence_item_id": item["id"], "run_state": state, "reason": reason})
     R.insert_many(conn, "item_state", states)
-
-
-def _prune_work(root: Path, keep_days: int) -> None:
-    if not root.is_dir():
-        return
-    limit = datetime.now().timestamp() - keep_days * 86400
-    for child in root.iterdir():
-        try:
-            if child.is_dir() and child.stat().st_mtime < limit:
-                shutil.rmtree(child, ignore_errors=True)
-        except OSError:
-            pass

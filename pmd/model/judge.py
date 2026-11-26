@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from ..rules import gates
+from ..rules.links import evidence_subjects
 from ..rules.workdays import working_days_left
 
 VALUES = ("ON_TRACK", "AT_RISK", "LATE", "UNKNOWN")
@@ -28,23 +28,7 @@ SCHEMA = {"type": "object", "properties": {"proposals": {"type": "array", "items
 
 
 def linked(gate, links, facts, tasks, prs):
-    subjects = {("GATE", gate["key"])}
-    subjects.update(("TASK", t["key"]) for t in tasks if t["gate_key"] == gate["key"])
-    for link in links:
-        kind, value = link["kind"], link["value"]
-        if kind in ("TASK", "UNIT"):
-            subjects.add((kind, value))
-        if kind == "TASK_PREFIX":
-            subjects.update(("TASK", t["key"]) for t in tasks if t["key"].startswith(value))
-        if kind in ("PR", "PR_SEARCH"):
-            for pr in prs:
-                if ((kind == "PR" and str(pr["number"]) == value.rsplit("#", 1)[-1])
-                        or (kind == "PR_SEARCH" and value.lower() in pr["title"].lower())):
-                    subjects.add(("PR", f"{pr['src_source_id']}#{pr['number']}"))
-    for pr in prs:
-        task_keys = pr["task_keys"].split(";")
-        if ("UNIT", pr["unit"]) in subjects or any(("TASK", key.strip()) in subjects for key in task_keys):
-            subjects.add(("PR", f"{pr['src_source_id']}#{pr['number']}"))
+    subjects = evidence_subjects(links, tasks, prs, gate["key"])
     relevant = [f for f in facts if (f["subject_type"].upper(), f["subject_key"]) in subjects
                 or (f["subject_type"].upper() == "PROJECT" and f["read_by"] == "MODEL")]
     return subjects, relevant

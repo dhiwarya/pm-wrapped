@@ -37,7 +37,7 @@ def _omit_nulls(value):
     return value
 
 
-def codex(prompt: str, schema: dict, *, timeout: int, model: str | None = None) -> cli.CliResult:
+def codex(prompt: str, schema: dict, *, timeout: int, model: str | None = None, effort: str | None = None) -> cli.CliResult:
     started = time.monotonic()
     data = None
     error = ""
@@ -57,6 +57,8 @@ def codex(prompt: str, schema: dict, *, timeout: int, model: str | None = None) 
                 "--output-schema", str(schema_path), "--output-last-message", str(output), "-"]
         if model:
             args[-1:-1] = ["--model", model]
+        if effort:
+            args[-1:-1] = ["-c", f"model_reasoning_effort={json.dumps(effort)}"]
         keep = ("HOME", "PATH", "LANG", "LC_ALL", "TMPDIR", "USER", "SHELL", "CODEX_HOME", "OPENAI_API_KEY")
         env = {name: os.environ[name] for name in keep if name in os.environ}
         try:
@@ -79,10 +81,11 @@ def codex(prompt: str, schema: dict, *, timeout: int, model: str | None = None) 
 def call(prompt: str, schema: dict, *, config: Config, cwd: Path, timeout: int, budget_usd: float,
          model: str | None = None, tools: str = "", fallback_prompt: Callable[[], str] | None = None) -> cli.CliResult:
     result = cli.call(prompt, schema, cwd=cwd, tools=tools, timeout=timeout, budget_usd=budget_usd,
-                      model=model, token_file=config.data_dir / "secrets" / "claude-token")
+                      model=config.claude_model or model, effort=config.claude_effort,
+                      token_file=config.data_dir / "secrets" / "claude-token")
     remaining = int(timeout - result.seconds)
     if not (result.limited and config.codex_fallback and remaining > 0):
         return result
     fallback = codex(fallback_prompt() if fallback_prompt else prompt, schema,
-                     timeout=remaining, model=config.codex_model)
+                     timeout=remaining, model=config.codex_model, effort=config.codex_effort)
     return replace(fallback, seconds=result.seconds + fallback.seconds, cost=result.cost)

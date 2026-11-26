@@ -135,7 +135,15 @@ def test_reader_rejects_invented_quote_and_judge_cannot_improve_floor():
 def test_codex_cli_is_invoked_only_for_a_claude_limit(config, tmp_path, monkeypatch):
     claude = tmp_path / "claude"
     codex = tmp_path / "codex"
-    claude.write_text('#!/bin/sh\nprintf \'%s\\n\' "{\\"subtype\\":\\"error_during_execution\\",\\"is_error\\":true,\\"result\\":\\"You\'ve hit your limit\\"}"\n')
+    config = replace(config, claude_model="claude-opus-5-5", claude_effort="high", codex_model="gpt-6.2-sol", codex_effort="high")
+    claude.write_text('''#!/usr/bin/env python3
+import json
+import sys
+args = sys.argv
+assert args[args.index("--model") + 1] == "claude-opus-5-5"
+assert args[args.index("--effort") + 1] == "high"
+print(json.dumps({"subtype": "error_during_execution", "is_error": True, "result": "You've hit your limit"}))
+''')
     codex.write_text('''#!/usr/bin/env python3
 import json
 from pathlib import Path
@@ -145,13 +153,15 @@ schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
 assert schema["additionalProperties"] is False
 assert args[args.index("--sandbox") + 1] == "read-only"
 assert "--ignore-user-config" in args and "shell_tool" in args and "unified_exec" in args and "--ephemeral" in args
+assert args[args.index("--model") + 1] == "gpt-6.2-sol"
+assert 'model_reasoning_effort="high"' in args
 assert sys.stdin.read() == "bounded test input"
 Path(args[args.index("--output-last-message") + 1]).write_text('{"facts": [], "not_read": []}')
 ''')
     for binary in (claude, codex):
         binary.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    answer = invoke_provider("bounded test input", reader.SCHEMA, config=config, cwd=tmp_path, timeout=10, budget_usd=0.1)
+    answer = invoke_provider("bounded test input", reader.SCHEMA, config=config, cwd=tmp_path, timeout=10, budget_usd=0.1, model="fable")
     assert answer.provider == "codex" and answer.data == {"facts": [], "not_read": []}
     opted_out = invoke_provider("bounded test input", reader.SCHEMA, config=replace(config, codex_fallback=False),
                                cwd=tmp_path, timeout=10, budget_usd=0.1)
@@ -159,3 +169,19 @@ Path(args[args.index("--output-last-message") + 1]).write_text('{"facts": [], "n
     claude.write_text("#!/bin/sh\necho 'authentication required' >&2\nexit 1\n")
     primary_failure = invoke_provider("bounded test input", reader.SCHEMA, config=config, cwd=tmp_path, timeout=10, budget_usd=0.1)
     assert primary_failure.provider == "claude" and not primary_failure.limited
+
+
+def test_confirm_selected_health_is_atomic_and_retry_keeps_one_confirmation(config, conn, client, tmp_path):
+    _, _, alpha = make_project(conn, tmp_path, "ALPHA")
+    _, _, beta = make_project(conn, tmp_path, "BETA")
+    result = run(config, now=WED, model_call=model_answer)
+    proposals = views.health_proposals(conn, result.snapshot_id)
+    rows = [{"project": key, "id": str(gid), "proposal_id": str(proposals[gid]["id"])}
+            for key, gid in (("ALPHA", alpha), ("BETA", beta))]
+    url = "/health/confirm-selected"
+    wrong = [rows[0], dict(rows[1], proposal_id=rows[0]["proposal_id"])]
+    assert "proposal has changed" in post(client, url, {"items": json.dumps(wrong)}).text
+    assert not hand.latest_confirmations(conn, [alpha, beta])
+    for _ in range(2):
+        assert "Confirmed 2 selected." in post(client, url, {"items": json.dumps(rows)}).text
+    assert conn.execute("SELECT count(*) FROM confirmation").fetchone()[0] == 2

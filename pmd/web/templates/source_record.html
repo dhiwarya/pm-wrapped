@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% from '_ui.html' import srclink %}
+{% block title %}Source · pm·dash{% endblock %}
+{% block main %}
+<section class="tile t-surface">
+  <h1>Source</h1><p>{{ label }}</p>
+  {% if src.label %}<p>{{ srclink(src) }}</p>{% endif %}
+  {% if row.src_commit %}<p>Commit <code>{{ row.src_commit }}</code></p>{% endif %}
+  {% if row.carried_over %}<p>Carried over from the last successful read.</p>{% endif %}
+</section>
+{% endblock %}

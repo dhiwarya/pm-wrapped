@@ -36,7 +36,8 @@ LIMIT = re.compile(
 )
 
 
-def build_command(prompt: str, schema: dict, *, tools: str, model: str | None, budget_usd: float, binary: str = "claude") -> list[str]:
+def build_command(prompt: str, schema: dict, *, tools: str, model: str | None, budget_usd: float,
+                  effort: str | None = None, binary: str = "claude") -> list[str]:
     cmd = [
         binary, "-p", prompt,
         "--restricted",
@@ -49,6 +50,8 @@ def build_command(prompt: str, schema: dict, *, tools: str, model: str | None, b
     ]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     return cmd
 
 
@@ -65,12 +68,13 @@ def _env(token_file: Path | None) -> dict[str, str]:
 
 
 def call(prompt: str, schema: dict, *, cwd: Path, tools: str = "Read,Glob,Grep", model: str | None = None,
-         budget_usd: float = 1.0, timeout: int = 600, token_file: Path | None = None, binary: str = "claude") -> CliResult:
+         effort: str | None = None, budget_usd: float = 1.0, timeout: int = 600, token_file: Path | None = None,
+         binary: str = "claude") -> CliResult:
     if shutil.which(binary) is None:
         return CliResult(None, error=f"{binary} is not installed or not on PATH")
     started = time.monotonic()
     try:
-        done = subprocess.run(build_command(prompt, schema, tools=tools, model=model, budget_usd=budget_usd, binary=binary),
+        done = subprocess.run(build_command(prompt, schema, tools=tools, model=model, effort=effort, budget_usd=budget_usd, binary=binary),
                               cwd=cwd, capture_output=True, text=True, timeout=timeout, env=_env(token_file), check=False)
     except subprocess.TimeoutExpired:
         return CliResult(None, seconds=time.monotonic() - started, error=f"the model call timed out after {timeout} s")

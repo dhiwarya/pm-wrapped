@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any
 
 from .gates import task_days_late
+from .links import pr_matches_link
 from .workdays import working_days_between
 
 Row = Mapping[str, Any]
@@ -33,9 +34,12 @@ def blockers(*, prs: Sequence[Row], reviews: Sequence[Row], tasks: Sequence[Row]
              units: Sequence[Row], today: date, holidays: Collection[date], review_wait_days: int = 2) -> list[dict]:
     """The blockers a program can find (Design §5-3). ``since`` is the day it started."""
     out: list[dict] = []
-    open_prs = {p["number"]: p for p in prs if p["state"] == "OPEN"}
+    def source(row):
+        return row["src_source_id"] if "src_source_id" in row.keys() else None
+
+    open_prs = {(source(p), p["number"]): p for p in prs if p["state"] == "OPEN"}
     for r in reviews:
-        pr = open_prs.get(r["pr_number"])
+        pr = open_prs.get((source(r), r["pr_number"]))
         if pr is None or r["state"] != "PENDING":
             continue
         start = _day(r["requested_at"]) or _day(pr["created_at"])
@@ -84,9 +88,12 @@ def blockers(*, prs: Sequence[Row], reviews: Sequence[Row], tasks: Sequence[Row]
 
 def carry_since(new: list[dict], previous: Sequence[Row]) -> None:
     """A blocker seen in the last snapshot keeps its first ``since`` (Part 3 §10-4)."""
-    first = {(p["kind"], p["subject_type"], p["subject_key"]): p["since"] for p in previous}
+    def identity(row):
+        return tuple(row[key] if key in row.keys() else None for key in ("kind", "subject_type", "subject_key", "src_source_id", "person_raw"))
+
+    first = {identity(p): p["since"] for p in previous}
     for b in new:
-        old = first.get((b["kind"], b["subject_type"], b["subject_key"]))
+        old = first.get(identity(b))
         if old and old < b["since"]:
             b["since"] = old
 
@@ -109,8 +116,7 @@ def item_state(links: Sequence[Row], *, tasks: Sequence[Row], hand_tasks: Sequen
                     objects.append((t["status"] in ("IN_PROGRESS", "DONE", "BLOCKED"), t["status"] == "DONE"))
         elif kind in ("PR", "PR_SEARCH"):
             for p in prs:
-                hit = str(p["number"]) == value.lstrip("#") if kind == "PR" else value.lower() in p["title"].lower()
-                if hit and p["state"] != "CLOSED":
+                if p["state"] != "CLOSED" and pr_matches_link(kind, value, p):
                     objects.append((True, p["state"] == "MERGED"))
         elif kind == "UNIT":
             status = next((u["status"] for u in unit_states if u["unit"] == value), "")

@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}pm·dash{% endblock %}</title>
 <script src="/static/theme.js"></script>
-<link rel="stylesheet" href="/static/pmd.css?v={{ version }}">
-<script src="/static/pmd.js?v={{ version }}" defer></script>
+<link rel="stylesheet" href="/static/pmd.css?v={{ asset_versions['pmd.css'] }}">
+<script src="/static/vendor/morphdom-2.7.8/morphdom-umd.min.js" defer></script>
+<script src="/static/pmd.js?v={{ asset_versions['pmd.js'] }}" defer></script>
 {% block head_extra %}{% endblock %}
 </head>
 <body>
@@ -15,8 +16,10 @@
     <a class="brand" href="/"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="11" cy="16" r="9" fill="#c9f23f"/><circle cx="21" cy="16" r="9" fill="#ff5aa5" style="mix-blend-mode:multiply"/></svg>pm·dash</a>
     <nav class="nav" aria-label="Views">
       <a href="/" {% if nav == "today" %}aria-current="page"{% endif %}>Today</a>
+      <a href="/pulls" {% if nav == "pulls" %}aria-current="page"{% endif %}>Pull requests</a>
       <a href="/timeline" {% if nav == "timeline" %}aria-current="page"{% endif %}>Timeline</a>
       <a href="/units" {% if nav == "units" %}aria-current="page"{% endif %}>Units</a>
+      <a href="/people" {% if nav == "people" %}aria-current="page"{% endif %}>People</a>
       <a href="/changes" {% if nav == "changes" %}aria-current="page"{% endif %}>Changes</a>
       <a href="/runs" {% if nav == "runs" %}aria-current="page"{% endif %}>Runs</a>
       <a href="/settings" {% if nav == "settings" %}aria-current="page"{% endif %}>Settings</a>
@@ -32,9 +35,10 @@
 {% if msg %}<div class="flash ok" role="status"><div class="wrap">✓ {{ msg }}</div></div>{% endif %}
 {% if err %}<div class="flash err" role="alert"><div class="wrap">✕ {{ err }}</div></div>{% endif %}
 <div class="flash err" role="alert" id="net-error" hidden><div class="wrap"></div></div>
+<div id="save-status" class="save-status" role="status" aria-live="polite"></div>
 <main class="wrap">
 {% block main %}{% endblock %}
 </main>
-<footer class="foot"><div class="wrap">pm·dash {{ version }} · reading by program and onboarding</div></footer>
+<footer class="foot"><div class="wrap">pm·dash {{ version }}</div></footer>
 </body>
 </html>

@@ -31,8 +31,9 @@
 {# The health dialog: the only way a confirmed value is made (R-C1). #}
 {% macro health_dialog(project_key, gate, back) -%}
 <dialog id="health-{{ gate.id }}" aria-labelledby="health-title-{{ gate.id }}">
-  <form class="dlg" method="post" action="/p/{{ project_key }}/gates/{{ gate.id }}/health">
+  <form data-inline class="dlg" method="post" action="/p/{{ project_key }}/gates/{{ gate.id }}/health">
     <header><h2 id="health-title-{{ gate.id }}">Health of {{ gate.key }}</h2><button class="btn" type="button" data-close>Close</button></header>
+    <div class="dialog-feedback" role="status"></div>
     <p class="muted">What you save here is your judgment. It is kept with the date, and a run never changes it.</p>
     <input type="hidden" name="back" value="{{ back }}">
     {% if gate.proposal %}<input type="hidden" name="proposal_id" value="{{ gate.proposal.id }}">{% endif %}
@@ -57,8 +58,9 @@
     {% for fid in reason.facts %}<a class="src" href="/facts/{{ fid }}">Source {{ loop.index }}</a>{% endfor %}</li>{% endfor %}</ul>
   <div class="row">
     {% if gate.needs_call and gate.proposal.value != 'UNKNOWN' %}
-    <form method="post" action="/p/{{ project_key }}/gates/{{ gate.id }}/health">
+    <form data-inline method="post" action="/p/{{ project_key }}/gates/{{ gate.id }}/health">
       <input type="hidden" name="back" value="{{ back }}"><input type="hidden" name="proposal_id" value="{{ gate.proposal.id }}">
+      <label class="pick"><input type="checkbox" id="pick-health-{{ gate.id }}" data-pick="health" value="{{ gate.id }}" data-project="{{ project_key }}" aria-label="Select health proposal for {{ project_key }} {{ gate.key }}"> Select</label>
       <button class="pill" type="submit" name="confirm" value="1">Confirm proposal</button>
     </form>{% endif %}
     <button class="pill ghost" type="button" data-open="health-{{ gate.id }}">{{ 'Override' if gate.needs_call else 'Change' }}</button>

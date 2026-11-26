@@ -1,0 +1,26 @@
+{% macro toolbar(set, action, back, verb, mode, sticky=false) -%}
+<form id="batch-{{ set }}" class="batch-bar{% if sticky %} batch-sticky{% endif %}" method="post" action="{{ action }}" data-inline data-batch="{{ set }}" data-mode="{{ mode }}">
+  <input type="hidden" name="back" value="{{ back }}">
+  <label class="pick"><input type="checkbox" data-all="{{ set }}"> Select all<span class="sr"> {{ set }}</span></label>
+  <span class="batch-count" data-selected-count aria-live="polite">0 selected</span>
+  {% if mode == "names" %}<label class="batch-person">Default person <input id="default-person" name="default_person" list="people-names" placeholder="For rows with no person entered" maxlength="80"></label>{% endif %}
+  <button class="btn primary" type="submit" name="action" value="accept" disabled>{{ verb }}</button>
+  {% if mode == "proposals" %}<button class="btn danger" type="submit" name="action" value="reject" disabled>Reject selected</button>{% endif %}
+</form>
+{%- endmacro %}
+
+{% macro names(unmatched, people, back) -%}
+{% if unmatched %}
+  {{ toolbar("names", "/settings/names/attach-selected", back, "Attach selected", "names") }}
+  <ul class="clist name-rows">{% for row in unmatched %}{% set key = row.kind ~ '-' ~ (row.value|urlencode) %}
+    <li id="name-{{ key }}">
+      <form class="name-row" method="post" action="/settings/names" data-inline>
+        <input type="hidden" name="back" value="{{ back }}"><input type="hidden" name="value" value="{{ row.value }}"><input type="hidden" name="kind" value="{{ row.kind }}">
+        <label class="pick"><input type="checkbox" id="pick-name-{{ key }}" data-pick="names" aria-label="Select {{ row.kind }} name {{ row.value }}"><span><b>{{ row.value }}</b> <small>{{ row.kind }} · {{ row.projects }}</small></span></label>
+        <input aria-label="Person for {{ row.value }}" id="alias-{{ key }}" name="person" list="people-names" placeholder="New or existing person" required maxlength="80">
+        <button class="btn sm" type="submit">Attach</button>
+      </form>
+    </li>{% endfor %}</ul>
+  <datalist id="people-names">{% for person in people %}<option value="{{ person.display_name }}">{% endfor %}</datalist>
+{% else %}<p>Every name in the last snapshot belongs to a person.</p>{% endif %}
+{%- endmacro %}

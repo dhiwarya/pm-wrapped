@@ -6,6 +6,7 @@ tables only, then redirects back with a short message.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -24,9 +25,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..config import Config
-from ..data import db, hand, views
+from ..data import db, hand, retention, views
 from ..data.hand import InputError
-from . import present
+from ..run.lock import Busy, exclusive
+from . import people, present, reports, selection
 from .guard import GuardMiddleware
 
 HERE = Path(__file__).parent
@@ -43,6 +45,8 @@ templates.env.globals.update(
     plural=present.plural,
     short_date=present.short_date,
     version=__version__,
+    asset_versions={name: hashlib.sha256((HERE / "static" / name).read_bytes()).hexdigest()[:12]
+                    for name in ("pmd.css", "pmd.js", "story.js")},
     RUN_RESULT=present.RUN_RESULT,
     BLOCKER_WORD=present.BLOCKER_WORD,
     KIND_WORD=present.KIND_WORD,
@@ -110,7 +114,7 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         own = conn is None
         conn = conn or db.connect(config.db_path)
         try:
-            head = present.header(conn, app.state.now())
+            head = ctx.get("head") or present.header(conn, app.state.now())
         finally:
             if own:
                 conn.close()
@@ -134,7 +138,7 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         back = safe_back(form.get("back"), default_back)
         try:
             result = fn(form)
-        except InputError as exc:
+        except (InputError, Busy) as exc:
             return redirect(back, err=str(exc))
         except sqlite3.IntegrityError:
             return redirect(back, err="That change conflicts with data already stored. Nothing was saved.")
@@ -151,7 +155,16 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
 
     @app.get("/", response_class=HTMLResponse)
     def today_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-        return render(request, "today.html", present.build_today(conn, app.state.now()), nav="today", conn=conn)
+        now = app.state.now()
+        return render(request, "today.html", present.build_today(conn, now, present.header(conn, now)), nav="today", conn=conn)
+
+    @app.get("/pulls", response_class=HTMLResponse)
+    def pulls_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        head = present.header(conn, app.state.now())
+        token_file = config.data_dir / "secrets" / "github-token"
+        configured = token_file.is_file() and token_file.stat().st_size > 0
+        return render(request, "pulls.html", {"pulls": present.pull_queue(conn, head), "head": head,
+                      "has_token": configured}, nav="pulls", conn=conn)
 
     @app.get("/changes", response_class=HTMLResponse)
     @app.get("/changes/{day}", response_class=HTMLResponse)
@@ -190,18 +203,31 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
             conf = confs.get(gid)
             proposal = latest.get(gid)
             card["live_confirmation"] = present.STATUS[conf["value"]]["word"] if conf else ""
-            card["can_confirm"] = bool(gate and not gate["outcome"] and gate["closed_at"] is None and proposal
+            card["can_confirm"] = bool(digest["snapshot_id"] is not None and gate and not gate["outcome"] and gate["closed_at"] is None and proposal
                                        and proposal["value"] == card["value"] and (not conf or conf["value"] != card["value"]))
         return render(request, "story.html", {"digest": digest, "cards": cards, "slide": max(0, min(slide, len(cards) - 1))},
                       nav="today", conn=conn)
 
     @app.get("/facts/{fid}", response_class=HTMLResponse)
-    def fact_view(request: Request, fid: int, conn: sqlite3.Connection = Depends(get_conn)):
+    def fact_view(request: Request, fid: int, snapshot: int | None = None, conn: sqlite3.Connection = Depends(get_conn)):
         fact = views.fact(conn, fid)
-        if fact is None:
+        if fact is None or (snapshot is not None and fact["snapshot_id"] != snapshot):
             raise StarletteHTTPException(status_code=404)
         return render(request, "fact.html", {"fact": fact, "value": json.loads(fact["value"]),
                                               "src": present.src_link(fact, present.repos_of(conn))}, conn=conn)
+
+    @app.get("/sources/{kind}/{row_id}", response_class=HTMLResponse)
+    def source_record(request: Request, kind: str, row_id: int, snapshot: int | None = None,
+                      conn: sqlite3.Connection = Depends(get_conn)):
+        row = views.source_row(conn, kind, row_id)
+        if row is None or (snapshot is not None and row["snapshot_id"] != snapshot):
+            raise StarletteHTTPException(status_code=404)
+        return render(request, "source_record.html", {"row": row, "kind": kind, "label": reports.describe(kind, row),
+                      "src": present.src_link(row, present.repos_of(conn))}, conn=conn)
+
+    @app.get("/people", response_class=HTMLResponse)
+    def people_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        return render(request, "people.html", people.build(conn, app.state.now()), nav="people", conn=conn)
 
     @app.get("/health", response_class=PlainTextResponse)
     def health(conn: sqlite3.Connection = Depends(get_conn)):
@@ -222,6 +248,22 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         ctx = present.build_project(conn, project, app.state.now())
         return render(request, "project.html", {**ctx, "tab": tab}, nav="project", conn=conn)
 
+    @app.get("/p/{key}/gates/{gate}/report.md")
+    def gate_report(request: Request, key: str, gate: str, include_proposal: bool = False,
+                    conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+        gates = hand.list_gates(conn, project["id"], include_closed=True)
+        row = next((g for g in gates if g["key"] == gate), None)
+        if row is None:
+            row = next((g for g in gates if str(g["id"]) == gate), None)
+        if row is None:
+            raise StarletteHTTPException(status_code=404)
+        report = reports.gate_markdown(conn, project, row, str(request.base_url), include_proposal)
+        return PlainTextResponse(report, media_type="text/markdown; charset=utf-8", headers={
+            "Content-Disposition": f'attachment; filename="{project["key"]}-{row["key"]}-gate-report.md"',
+            "Cache-Control": "no-store",
+        })
+
     @app.get("/settings", response_class=HTMLResponse)
     def settings_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
         ctx = {
@@ -240,6 +282,8 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
             "model_timeout_s": hand.get_setting(conn, "model_timeout_s", "600"),
             "model_budget_usd": hand.get_setting(conn, "model_budget_usd", "2.00"),
             "baseline_model_budget_usd": hand.get_setting(conn, "baseline_model_budget_usd", "3.00"),
+            "snapshot_days": hand.get_setting(conn, "snapshot_days", str(retention.SNAPSHOT_DAYS)),
+            "work_days": hand.get_setting(conn, "work_days", str(retention.WORK_DAYS)),
             "unmatched": views.unmatched_names(conn, (views.current_snapshot(conn) or {"id": None})["id"]),
             "aliases": conn.execute("SELECT a.*, p.display_name FROM person_alias a JOIN person p ON p.id = a.person_id ORDER BY p.display_name, a.kind").fetchall(),
         }
@@ -308,7 +352,14 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         project = project_or_404(conn, key)
 
         def do(f):
-            hand.delete_project(conn, project["id"], f.get("confirm_key"))
+            with exclusive(config.data_dir / "run.lock", "project removal"), db.transaction(conn):
+                sources = hand.list_sources(conn, project["id"])
+                days = hand.delete_project(conn, project["id"], f.get("confirm_key"))
+                try:
+                    retention.remove_mirrors(config.data_dir / "mirrors", [source["id"] for source in sources])
+                    retention.remove_digest_files(config.data_dir / "digests", days)
+                except OSError as exc:
+                    raise InputError(f"Could not clean up generated files: {exc}") from None
             return f"Project {key} deleted.", "/"
 
         return await act(request, f"/p/{key}", do)
@@ -366,28 +417,19 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         project = project_or_404(conn, key)
 
         def do(f):
-            with db.transaction(conn):
-                gate = hand.get_gate(conn, project["id"], gid)
-                if gate["outcome"] or gate["closed_at"]:
-                    raise InputError("This gate is closed or already has an outcome.")
-                proposal_id = None
-                value = f.get("value")
-                if f.get("proposal_id"):
-                    try:
-                        proposal_id = int(f["proposal_id"])
-                    except ValueError:
-                        raise InputError("Invalid gate proposal.") from None
-                    proposal = views.health_proposal(conn, proposal_id, gid)
-                    snap = views.current_snapshot(conn)
-                    latest = views.health_proposals(conn, snap["id"] if snap else None).get(gid)
-                    if not proposal or not latest or proposal["value"] != latest["value"]:
-                        raise InputError("The gate proposal has changed. Review the current proposal on Today.")
-                    if f.get("confirm") == "1":
-                        value = proposal["value"]
-                hand.add_confirmation(conn, gid, value, f.get("note"), proposal_id=proposal_id)
+            selection.save_health(conn, project["id"], gid, f)
             return "Health saved as your confirmed value."
 
         return await act(request, f"/p/{key}?tab=gates#g-{gid}", do)
+
+    @app.post("/health/confirm-selected")
+    async def confirm_selected(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        return await act(request, "/", lambda f: selection.confirm(conn, f))
+
+    @app.post("/p/{key}/gates/{gid}/items/mark-selected")
+    async def mark_selected(request: Request, key: str, gid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+        return await act(request, f"/p/{key}?tab=gates", lambda f: selection.mark_met(conn, project["id"], gid, f))
 
     # ------------------------------------------------------------ evidence items
 
@@ -562,10 +604,14 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         return await act(request, "/runs", do)
 
     @app.get("/runs", response_class=HTMLResponse)
-    def runs_view(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    @app.get("/runs/{run_id}", response_class=HTMLResponse)
+    def runs_view(request: Request, run_id: int | None = None, conn: sqlite3.Connection = Depends(get_conn)):
         tz = present.zone(conn)
         now_ = app.state.now()
-        items = views.runs(conn)
+        selected = views.run_record(conn, run_id) if run_id is not None else None
+        if run_id is not None and selected is None:
+            raise StarletteHTTPException(status_code=404)
+        items = [selected] if selected is not None else views.runs(conn)
         ids = [r["id"] for r in items]
         srcs, probs = views.run_sources(conn, ids), views.run_problems(conn, ids)
         rows = []
@@ -576,9 +622,17 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
                 took = f"{secs // 60} min {secs % 60:02d} s" if secs >= 60 else f"{secs} s"
             rows.append({"row": r, "when": present.when_text(r["started_at"], tz, now_), "took": took, "sources": srcs[r["id"]],
                          "problems": probs[r["id"]], "counts": views.run_counts(conn, r["id"]), "look": present.RUN_RESULT[r["result"]],
-                         "model_reads": views.model_reads(conn, r["id"])})
+                         "model_reads": views.model_reads(conn, r["id"]), "snapshot": views.kept_snapshot(conn, r["id"])})
         projects = hand.list_projects(conn)
-        return render(request, "runs.html", {"rows": rows, "projects": projects}, nav="runs", conn=conn)
+        history = None
+        if selected is not None and rows[0]["snapshot"]:
+            snapshot = rows[0]["snapshot"]
+            repos = present.repos_of(conn)
+            blockers = [{"project": p["name"], "detail": b["detail"], "src": present.citation(b, repos, "blocker")}
+                        for p in hand.list_projects(conn, hand.PROJECT_STATES)
+                        for b in views.snapshot_rows(conn, "blocker", snapshot["id"], p["id"])]
+            history = {"id": snapshot["id"], "blockers": blockers}
+        return render(request, "runs.html", {"rows": rows, "projects": projects, "selected": selected, "history": history}, nav="runs", conn=conn)
 
     @app.get("/units", response_class=HTMLResponse)
     def units_view(request: Request, project: str | None = None, conn: sqlite3.Connection = Depends(get_conn)):
@@ -633,9 +687,14 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         project = project_or_404(conn, key)
 
         def do(f):
-            hand.get_source(conn, project["id"], sid)
-            hand.remove_source(conn, project["id"], sid)
-            return "Source removed. Its mirror stays in the data directory until you delete it."
+            with exclusive(config.data_dir / "run.lock", "source removal"), db.transaction(conn):
+                hand.get_source(conn, project["id"], sid)
+                hand.remove_source(conn, project["id"], sid)
+                try:
+                    retention.remove_mirrors(config.data_dir / "mirrors", [sid])
+                except OSError as exc:
+                    raise InputError(f"Could not remove the local mirror: {exc}") from None
+            return "Source and local mirror removed."
 
         return await act(request, f"/p/{key}?tab=sources", do)
 
@@ -679,7 +738,24 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
     async def name_attach(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
         def do(f):
             hand.attach_name(conn, f.get("value"), f.get("kind"), f.get("person"))
-            return "Name attached. The next run matches it."
+            return "Name attached."
+
+        return await act(request, "/settings", do)
+
+    @app.post("/settings/names/attach-selected")
+    async def attach_selected(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        return await act(request, "/settings", lambda f: selection.attach(conn, f))
+
+    @app.post("/settings/retention")
+    async def retention_settings(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+        def do(f):
+            values = {name: str(f.get(name, "")).strip() for name in ("snapshot_days", "work_days")}
+            if not all(value.isascii() and value.isdigit() and len(value) <= 4 and 1 <= int(value) <= 3650 for value in values.values()):
+                raise InputError("Enter between 1 and 3650 days for both settings.")
+            with db.transaction(conn):
+                for name, value in values.items():
+                    hand.set_setting(conn, name, value)
+            return "Retention settings saved for the next run."
 
         return await act(request, "/settings", do)
 
@@ -754,6 +830,11 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
 
         return await act(request, f"/p/{key}/onboarding", do)
 
+    @app.post("/p/{key}/onboarding/{oid}/decide-selected")
+    async def decide_selected(request: Request, key: str, oid: int, conn: sqlite3.Connection = Depends(get_conn)):
+        project = project_or_404(conn, key)
+        return await act(request, f"/p/{key}/onboarding/{oid}", lambda f: selection.decide(conn, project["id"], oid, f))
+
     @app.post("/p/{key}/onboarding/{oid}/accept-kind")
     async def proposal_accept_kind(request: Request, key: str, oid: int, conn: sqlite3.Connection = Depends(get_conn)):
         project = project_or_404(conn, key)
@@ -761,7 +842,7 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         def do(f):
             kind = str(f.get("kind", ""))
             if kind in ("GATE", "EVIDENCE", "PROJECT"):
-                raise InputError("Gates, evidence and the project are accepted one by one (R-O4).")
+                raise InputError("Select the individual proposals in the review, then choose Accept selected.")
             from ..data.db import transaction
 
             n = 0

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_ui.html" import srclink, blob %}
+{% from "_selection.html" import toolbar %}
 {% set p = project %}
 {% block title %}Onboarding · {{ p.name }} · pm·dash{% endblock %}
 {% block head_extra %}{% if starting is defined %}<meta http-equiv="refresh" content="2">{% elif onboarding and onboarding.result == "RUNNING" %}<meta http-equiv="refresh" content="3; url=/p/{{ project.key }}/onboarding/{{ onboarding.id }}">{% endif %}{% endblock %}
@@ -26,6 +27,7 @@
     <div class="eyebrow">Onboarding {{ onboarding.id }} · {{ started }}</div>
     <div class="n review-n" data-count="{{ open }}">{{ open }}</div>
     <div class="what">{{ plural(open, "proposal") }} left to decide, of {{ total }}</div>
+    {% if open %}<p>Select proposals individually or by section. Editing a field selects that proposal. Accept saves the values shown.</p>{% endif %}
     <p class="soft">{% if onboarding.prose_read %}Prose read by the model. {{ onboarding.dropped }} {{ plural(onboarding.dropped, "proposal") }} dropped by the quote check. Claude usage ${{ "%.2f"|format(onboarding.model_cost) }}.{% else %}Only setup found by the program is shown.{% endif %}{% if onboarding.used_codex %} Codex fallback attempted.{% endif %} Took {{ took }}.</p>
   </div>
   <div class="tile t-night s5">
@@ -41,20 +43,20 @@
 {% set open_items = items|selectattr("open")|list %}
 <section class="tile {{ 't-butter' if kind == 'GATE' else 't-surface' }} proposals" id="k-{{ kind }}">
   <div class="proposals-head"><h2>{{ kind_word[kind] }}</h2><span class="tag">{{ open_items|length }} open</span>
-    {% if kind in ("PERSON", "PATTERN", "HOLIDAY", "WBS", "DASHBOARD_FILE") and open_items|selectattr("read_by", "equalto", "PROGRAM")|list|length > 1 %}
-    <span class="spacer"></span><form method="post" action="/p/{{ p.key }}/onboarding/{{ onboarding.id }}/accept-kind"><input type="hidden" name="kind" value="{{ kind }}"><button class="btn sm" type="submit">Accept all read by program</button></form>{% endif %}
+    {% if open_items %}<label class="pick"><input type="checkbox" data-all="proposals" data-group="k-{{ kind }}"> Select section</label>{% endif %}
   </div>
-  {% if kind == "GATE" %}<p class="d">Accept gates one by one. A date read from prose is shown first in its sentence, so check it against the quote.</p>{% endif %}
+  {% if kind == "GATE" %}<p class="d">Check each proposed date against its source before accepting.</p>{% endif %}
   <ul class="plist">
   {% for x in items %}{% set pl = x.payload %}
     <li class="prop {% if not x.open %}decided{% endif %}" id="p-{{ x.id }}">
       {% if not x.open %}
-        <span class="d">{{ (x.decision|lower).replace("edited", "accepted with your edits") }}: <b>{{ pl.key or pl.name or pl.display_name or pl.text or pl.path or pl.pattern or pl.date }}</b></span>
-        {% if x.decision == "REJECTED" %}<form method="post" action="/p/{{ p.key }}/proposals/{{ x.id }}"><input type="hidden" name="action" value="undo"><input type="hidden" name="back" value="/p/{{ p.key }}/onboarding/{{ onboarding.id }}#k-{{ kind }}"><button class="btn sm" type="submit">Undo</button></form>{% endif %}
+        <span class="d">{{ (x.decision|lower).replace("edited", "accepted with your edits") }}: <b>{% if pl.key and pl.name %}{{ pl.key }} · {{ pl.name }}{% else %}{{ pl.key or pl.name or pl.display_name or pl.text or pl.path or pl.pattern or pl.date }}{% endif %}</b></span>
+        {% if x.decision == "REJECTED" %}<form data-inline method="post" action="/p/{{ p.key }}/proposals/{{ x.id }}"><input type="hidden" name="action" value="undo"><input type="hidden" name="back" value="/p/{{ p.key }}/onboarding/{{ onboarding.id }}#k-{{ kind }}"><button class="btn sm" type="submit">Undo</button></form>{% endif %}
       {% else %}
-      <form class="propform" method="post" action="/p/{{ p.key }}/proposals/{{ x.id }}">
+      <form data-inline class="propform" method="post" action="/p/{{ p.key }}/proposals/{{ x.id }}">
         <input type="hidden" name="back" value="/p/{{ p.key }}/onboarding/{{ onboarding.id }}#k-{{ kind }}">
         <div class="propbody">
+          <label class="pick"><input type="checkbox" id="pick-proposal-{{ x.id }}" data-pick="proposals" value="{{ x.id }}" aria-label="Select {{ kind|lower }} {{ x.identity }}"> Select</label>
           {% if kind == "GATE" %}
             <div class="grid3">
               <div class="field"><label for="k{{ x.id }}">Key</label><input id="k{{ x.id }}" name="edit_key" value="{{ pl.key }}" maxlength="16"></div>
@@ -66,7 +68,7 @@
               <div class="field"><label for="g{{ x.id }}">Gate</label><input id="g{{ x.id }}" name="edit_gate_key" value="{{ pl.gate_key }}" maxlength="16"></div>
               <div class="field span2"><label for="t{{ x.id }}">Evidence item</label><input id="t{{ x.id }}" name="edit_text" value="{{ pl.text }}" maxlength="500"></div>
             </div>
-            {% if not x.gate_ready %}<p class="d">Gate {{ pl.gate_key }} is not in the project yet: accept it first, or name an open gate.</p>{% endif %}
+            {% if not x.gate_ready %}<p class="d">Gate {{ pl.gate_key }} is pending. Select its proposal too, or enter an open gate.</p>{% endif %}
           {% elif kind == "PROJECT" %}
             <div class="field"><label for="pn{{ x.id }}">Name</label><input id="pn{{ x.id }}" name="edit_name" value="{{ pl.name }}" maxlength="120"></div>
             <div class="field"><label for="ps{{ x.id }}">Scope</label><textarea id="ps{{ x.id }}" name="edit_scope_note" rows="3" maxlength="1000">{{ pl.scope_note }}</textarea></div>
@@ -93,7 +95,6 @@
         </div>
         <div class="propacts">
           <button class="btn primary sm" name="action" value="accept" type="submit">Accept</button>
-          <button class="btn sm" name="action" value="edit" type="submit">Accept with my edits</button>
           <button class="btn sm danger" name="action" value="reject" type="submit">Reject</button>
         </div>
       </form>
@@ -103,6 +104,7 @@
   </ul>
 </section>
 {% endfor %}
+{% if open %}{{ toolbar("proposals", "/p/" ~ p.key ~ "/onboarding/" ~ onboarding.id ~ "/decide-selected", "/p/" ~ p.key ~ "/onboarding/" ~ onboarding.id, "Accept selected", "proposals", sticky=true) }}{% endif %}
 {% if total == 0 %}<section class="tile t-night empty"><div class="eyebrow">Nothing new</div><h2>The project already has everything the agent found.</h2></section>{% endif %}
 {% endif %}
 {% endblock %}

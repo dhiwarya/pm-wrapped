@@ -130,6 +130,10 @@ def add_source_read(conn: sqlite3.Connection, *, run_id: int | None = None, onbo
         )
 
 
+def mark_github_read(conn, run_id, source_id):
+    conn.execute("UPDATE run_source SET github_read = 1 WHERE run_id = ? AND source_id = ? AND ok = 1", (run_id, source_id))
+
+
 def add_problem(conn: sqlite3.Connection, *, run_id: int | None = None, onboarding_id: int | None = None,
                 project_id: int | None = None, stage: str, adapter: str = "", path: str = "",
                 line: int | None = None, reason: str) -> None:

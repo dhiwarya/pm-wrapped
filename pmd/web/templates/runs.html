@@ -1,8 +1,10 @@
 {% extends "base.html" %}
+{% from "_ui.html" import srclink %}
 {% block title %}Runs · pm·dash{% endblock %}
 {% block head_extra %}{% if head and head.running %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
 {% block main %}
-<div class="vhead"><h1>Runs</h1><p>One scheduled run each weekday at the run time. None on Saturday and Sunday.</p>
+<div class="vhead"><h1>{% if selected %}Run {{ selected.id }}{% else %}Runs{% endif %}</h1>
+  {% if selected %}<a href="/runs">All runs</a>{% else %}<p>One scheduled run each weekday at the run time.</p>{% endif %}
   <span class="spacer"></span>
   {% if projects %}
   <form class="inline" method="post" action="/run">
@@ -45,8 +47,15 @@
         <span class="d">{{ '%.1f'|format(call.seconds) }} s{% if call.cost %} · ${{ '%.3f'|format(call.cost) }} Claude usage{% endif %}{% if call.stage == 'ST-4' %} · {{ call.kept }} kept · {{ call.dropped }} dropped{% endif %}</span></li>{% endfor %}</ul>
       {% endif %}
       <p class="d">{{ r.counts.get("requests", 0) }} GitHub {{ plural(r.counts.get("requests", 0), "request") }}, all GET.</p>
+      {% if r.snapshot and not selected %}<a class="src" href="/runs/{{ run.id }}">Open snapshot {{ r.snapshot.id }}</a>
+      {% elif not r.snapshot and run.result in ('OK', 'PARTIAL') %}<p class="d">Snapshot pruned by retention.</p>{% endif %}
     </div>
   </details>
 {% endfor %}
 </div>
+{% if history %}
+<section class="tile t-surface"><h2>Snapshot {{ history.id }}</h2><h3>Blockers recorded by this run</h3>
+  <ul class="clist">{% for blocker in history.blockers %}<li><span>{{ blocker.project }} · {{ blocker.detail }}</span>{{ srclink(blocker.src) }}</li>{% else %}<li>No blockers recorded.</li>{% endfor %}</ul>
+</section>
+{% endif %}
 {% endblock %}

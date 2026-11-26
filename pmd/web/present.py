@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..adapters.aidlc import STAGES
 from ..data import hand, views
 from ..rules.changes import highlights
+from ..rules.pulls import assess
 from ..rules.gates import need_call_count, split_next_gate, task_days_late
 from ..rules.workdays import working_days_left, working_days_past
 
@@ -135,6 +136,18 @@ def repos_of(conn: sqlite3.Connection) -> dict[int, str]:
     return {r["id"]: r["github_repo"] for r in conn.execute("SELECT id, github_repo FROM source WHERE github_repo <> ''")}
 
 
+def citation(row, repos, kind):
+    src = src_link(row, repos)
+    if not src["url"] and src["label"]:
+        path = f"/facts/{row['id']}" if kind == "fact" else f"/sources/{kind}/{row['id']}"
+        src["url"] = f"{path}?snapshot={row['snapshot_id']}"
+    return src
+
+
+def hand_task_citation(project_key, row):
+    return {"url": f"/p/{project_key}?tab=tasks#task-{row['id']}", "label": f"Hand task {row['key']}"}
+
+
 # ---------------------------------------------------------------- header and stale banner (Design §7-5)
 
 def expected_run_time(now: datetime, tz, run_time: str) -> datetime:
@@ -242,10 +255,22 @@ def blocker_view(b: sqlite3.Row, repos: dict[int, str]) -> dict:
 
 # ---------------------------------------------------------------- V-1 Today
 
-def build_today(conn: sqlite3.Connection, now: datetime) -> dict:
+def pull_queue(conn, head):
+    snap = head["snapshot"]
+    sources = views.pull_sources(conn, snap["run_id"] if snap else None)
+    refreshed = {s["id"] for s in sources if s["refreshed"]}
+    groups = {label: [] for label in ("Needs attention", "Ready to merge", "Waiting", "Draft", "Unverified")}
+    for pr in views.open_pulls(conn, snap["id"] if snap else None):
+        stale = head["stale"] or pr["carried_over"] or pr["source_id"] not in refreshed
+        result = assess(pr, stale=stale)
+        groups[result.label].append({"pr": pr, "reason": result.reason, "url": src_link(pr, {})["url"]})
+    return {"groups": groups, "unread": [s for s in sources if not s["refreshed"]], "sources": sources}
+
+
+def build_today(conn: sqlite3.Connection, now: datetime, head: dict) -> dict:
     day = today(conn, now)
     tz = zone(conn)
-    snap = views.current_snapshot(conn)
+    snap = head["snapshot"]
     snap_id = snap["id"] if snap else None
     states = views.item_states(conn, snap_id)
     proposals = views.health_proposals(conn, snap_id)
@@ -284,6 +309,7 @@ def build_today(conn: sqlite3.Connection, now: datetime) -> dict:
     problems = conn.execute("SELECT count(*) FROM run_problem WHERE run_id = ?", (snap["run_id"],)).fetchone()[0] if snap else 0
     read = conn.execute("SELECT count(DISTINCT source_id) FROM run_source WHERE run_id = ? AND ok = 1", (snap["run_id"],)).fetchone()[0] if snap else 0
     return {"day": day, "day_text": full_date(day), "blocks": blocks, "need": need, "count": len(blocks), "snapshot": snap,
+            "pulls": pull_queue(conn, head), "head": head,
             "snap_when": when_text(snap["created_at"], tz, now) if snap else "", "sources_read": read, "problems": problems,
             "digest": views.digest(conn), "prose_failed": bool(snap and any(r["stage"] == "ST-4" and r["error"] for r in views.model_reads(conn, snap["run_id"])))}
 

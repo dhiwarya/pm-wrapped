@@ -1,0 +1,9 @@
+[Unit]
+Description=PM Dash SQLite backup
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/pm-dash backup
+UMask=0077
+NoNewPrivileges=yes
+TimeoutStartSec=10min

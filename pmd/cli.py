@@ -1,11 +1,9 @@
-"""``pm-dash web | run | onboard | doctor`` (Detailed Design Part 1 §1, Part 3 §10, §12-1).
-
-``backup`` arrives with Phase 4.
-"""
+"""Command-line entry points for the dashboard and its data."""
 
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import stat
 import sys
 from pathlib import Path
@@ -107,6 +105,27 @@ def cmd_onboard(config: Config, args) -> int:
     return 0 if outcome.result == "OK" else 1
 
 
+def cmd_copy(config: Config, args) -> int:
+    from .data import backup
+    from .run.lock import Busy, exclusive
+
+    target = config.db_path if args.command == "restore" else config.data_dir / "backup"
+    if inside_git_work_tree(target):
+        print("Choose a data directory outside any Git working tree.", file=sys.stderr)
+        return 1
+    try:
+        if args.command == "restore":
+            path = backup.restore(args.backup, config.db_path)
+        else:
+            with exclusive(config.data_dir / "backup.lock", "backup"):
+                path = backup.create(config.db_path)
+    except (OSError, sqlite3.Error, ValueError, Busy) as exc:
+        print(f"Could not {args.command}: {exc}", file=sys.stderr)
+        return 1
+    print(f"{'Restored' if args.command == 'restore' else 'Backed up'} {path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pm-dash", description="Project Manager Dashboard")
     parser.add_argument("--version", action="version", version=f"pm-dash {__version__}")
@@ -120,10 +139,15 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--baseline", action="store_true", help="read everything, not only changes")
     p_onb = sub.add_parser("onboard", help="read a project's sources and propose its setup")
     p_onb.add_argument("--project", required=True)
+    sub.add_parser("backup", help="make a consistent copy of the dashboard database")
+    p_restore = sub.add_parser("restore", help="restore a backup into an empty data directory")
+    p_restore.add_argument("backup", type=Path)
     args = parser.parse_args(argv)
     config = load(args.config)
     if args.command in ("run", "onboard"):
         return {"run": cmd_run, "onboard": cmd_onboard}[args.command](config, args)
+    if args.command in ("backup", "restore"):
+        return cmd_copy(config, args)
     if args.command == "web":
         import os
 

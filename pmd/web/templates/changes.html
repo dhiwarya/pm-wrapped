@@ -6,7 +6,7 @@
 {% if digest %}
 <section class="tile t-surface digest">
   <div class="row"><h2>{{ short_date(digest.day) }} digest</h2><a class="btn primary" href="/story/{{ digest.day }}">Play story</a></div>
-  <pre class="digest-text">{{ digest.text }}</pre>
+  <pre class="digest-text">{{ digest.text|urlize(rel="noreferrer noopener") }}</pre>
   {% if days|length > 1 or historical %}<nav class="row" aria-label="Digest history"><a href="/changes">Latest run</a>
     {% for day in days %}<a href="/changes/{{ day }}"{% if historical and day == digest.day %} aria-current="page"{% endif %}>{{ short_date(day) }}</a>{% endfor %}
   </nav>{% endif %}

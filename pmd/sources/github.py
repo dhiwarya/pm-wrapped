@@ -21,6 +21,10 @@ class GitHubError(RuntimeError):
     pass
 
 
+class GitHubPermissionError(GitHubError):
+    pass
+
+
 class ReadOnlyGitHub:
     def __init__(self, token: str | None, *, log: Callable[[str, str, str, int | None], None] | None = None,
                  transport: httpx.BaseTransport | None = None, timeout: float = 30.0) -> None:
@@ -49,6 +53,8 @@ class ReadOnlyGitHub:
             raise GitHubError("GitHub refused the token (401)")
         if response.status_code == 403 and response.headers.get("x-ratelimit-remaining") == "0":
             raise GitHubError("GitHub rate limit reached")
+        if response.status_code == 403 and "resource not accessible" in response.text.lower():
+            raise GitHubPermissionError(f"GitHub denied read access to {path}")
         if response.status_code >= 400:
             raise GitHubError(f"GitHub answered {response.status_code} for {path}")
         return response
@@ -57,32 +63,55 @@ class ReadOnlyGitHub:
         return self.get(path, params).json()
 
     def paged(self, path: str, params: dict | None = None, *, stop: Callable[[dict], bool] | None = None,
-              max_pages: int = 10) -> list[dict]:
+              max_pages: int | None = 10) -> list[dict]:
         items: list[dict] = []
         params = {"per_page": 100, **(params or {})}
-        for page in range(1, max_pages + 1):
-            batch = self.json(path, {**params, "page": page})
-            if not isinstance(batch, list) or not batch:
-                break
+        page = 1
+        while max_pages is None or page <= max_pages:
+            response = self.get(path, {**params, "page": page})
+            batch = response.json()
+            if not isinstance(batch, list):
+                raise GitHubError(f"Unexpected list response for {path}")
             for item in batch:
                 if stop and stop(item):
                     return items
                 items.append(item)
-            if len(batch) < params["per_page"]:
+            if "next" not in response.links and len(batch) < params["per_page"]:
                 break
+            page += 1
         return items
 
 
 def checks_state(gh: ReadOnlyGitHub, repo: str, sha: str) -> str:
-    runs = gh.json(f"/repos/{repo}/commits/{sha}/check-runs", {"per_page": 100}).get("check_runs", [])
-    status = gh.json(f"/repos/{repo}/commits/{sha}/status")
-    conclusions = [r.get("conclusion") for r in runs]
-    states = [s.get("state") for s in status.get("statuses", [])]
-    if any(c in ("failure", "timed_out", "cancelled", "action_required") for c in conclusions) or any(s in ("failure", "error") for s in states):
+    path = f"/repos/{repo}/commits/{sha}"
+    runs = []
+    page = 1
+    while True:
+        response = gh.get(f"{path}/check-runs", {"filter": "latest", "per_page": 100, "page": page})
+        payload = response.json()
+        batch = payload.get("check_runs") if isinstance(payload, dict) else None
+        if not isinstance(batch, list):
+            raise GitHubError("GitHub returned incomplete check runs")
+        runs.extend(batch)
+        if "next" not in response.links and len(runs) >= payload.get("total_count", len(runs)):
+            break
+        if not batch:
+            raise GitHubError("GitHub returned incomplete check runs")
+        page += 1
+    status = gh.json(f"{path}/status")
+    if not isinstance(status, dict) or not isinstance(status.get("statuses"), list):
+        raise GitHubError("GitHub returned incomplete commit statuses")
+    # The combined state covers all contexts, including those beyond the first page.
+    # GitHub also reports "pending" for zero contexts, even when check runs succeeded.
+    has_statuses = bool(status["statuses"] or status.get("total_count", 0))
+    combined = status.get("state") if has_statuses else None
+    conclusions = {r.get("conclusion") for r in runs}
+    if conclusions & {"failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"} or combined in ("failure", "error"):
         return "FAILING"
-    if any(r.get("status") != "completed" for r in runs) or "pending" in states:
+    if (any(r.get("status") != "completed" for r in runs) or conclusions - {"success", "skipped", "neutral"}
+            or (has_statuses and combined != "success")):
         return "PENDING"
-    if conclusions or states:
+    if "success" in conclusions or combined == "success":
         return "PASSING"
     return "NONE"
 
@@ -97,14 +126,19 @@ def fetch_repo(gh: ReadOnlyGitHub, repo: str, dest: Path, *, since: datetime | N
     dest.mkdir(parents=True, exist_ok=True)
     horizon = since or (datetime.now(UTC) - timedelta(days=closed_window_days))
     horizon_iso = horizon.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    open_prs = gh.paged(f"/repos/{repo}/pulls", {"state": "open", "sort": "updated", "direction": "desc"})
+    open_prs = gh.paged(f"/repos/{repo}/pulls", {"state": "open", "sort": "updated", "direction": "desc"}, max_pages=None)
     closed_prs = gh.paged(f"/repos/{repo}/pulls", {"state": "closed", "sort": "updated", "direction": "desc"},
                           stop=lambda p: p.get("updated_at", "") < horizon_iso)
     pulls = []
-    for pr in open_prs + closed_prs:
+    unread_checks = 0
+    for pr in {p["number"]: p for p in open_prs + closed_prs}.values():
         number = pr["number"]
+        if pr["state"] == "open":
+            # Only the individual PR endpoint reports mergeability. Use its head
+            # for checks, even when the branch moved after the list request.
+            pr = gh.json(f"/repos/{repo}/pulls/{number}")
         entry = {"pr": pr, "reviews": [], "requests": [], "checks": "NONE"}
-        entry["reviews"] = gh.paged(f"/repos/{repo}/pulls/{number}/reviews")
+        entry["reviews"] = gh.paged(f"/repos/{repo}/pulls/{number}/reviews", max_pages=None)
         if pr.get("state") == "open":
             if pr.get("requested_reviewers"):
                 timeline = gh.paged(f"/repos/{repo}/issues/{number}/timeline")
@@ -114,13 +148,25 @@ def fetch_repo(gh: ReadOnlyGitHub, repo: str, dest: Path, *, since: datetime | N
                 ]
             head_sha = (pr.get("head") or {}).get("sha")
             if head_sha:
-                entry["checks"] = checks_state(gh, repo, head_sha)
+                try:
+                    entry["checks"] = checks_state(gh, repo, head_sha)
+                except GitHubPermissionError:
+                    unread_checks += 1
+                    entry["ci_unread"] = True
+                if pr.get("mergeable") is None:
+                    # The first GET may start GitHub's background merge calculation.
+                    # Only reuse the checks and reviews for the version we just read.
+                    latest = gh.json(f"/repos/{repo}/pulls/{number}")
+                    if (latest["state"] == "closed" or
+                            (latest["head"]["sha"] == head_sha and latest["base"]["sha"] == pr["base"]["sha"]
+                             and latest["updated_at"] == pr["updated_at"])):
+                        entry["pr"] = latest
         pulls.append(entry)
     issues = [i for i in gh.paged(f"/repos/{repo}/issues", {"state": "all", "since": horizon_iso, "sort": "updated"})
               if "pull_request" not in i]
     (dest / "pulls.json").write_text(json.dumps(pulls), encoding="utf-8")
     (dest / "issues.json").write_text(json.dumps(issues), encoding="utf-8")
-    return {"pulls": len(pulls), "issues": len(issues)}
+    return {"pulls": len(pulls), "issues": len(issues), "unread_checks": unread_checks}
 
 
 def recent_prs(gh: ReadOnlyGitHub, repo: str, limit: int = 200) -> list[dict]:

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_selection.html" import names %}
 {% block title %}Settings · pm·dash{% endblock %}
 {% block main %}
 <div class="vhead"><h1>Settings</h1><p>For all projects.</p></div>
@@ -28,7 +29,7 @@
   <div class="tile t-surface s7">
     <div class="eyebrow">People</div>
     {% if people %}
-    <ul class="clist">{% for person in people %}<li>
+    <ul class="clist">{% for person in people %}<li id="person-{{ person.id }}">
       <form class="inline grow" method="post" action="/settings/people/{{ person.id }}">
         <label class="sr" for="pp{{ person.id }}">Name</label><input id="pp{{ person.id }}" name="name" value="{{ person.display_name }}" required maxlength="80">
         <button class="btn sm" type="submit">Rename</button>
@@ -57,18 +58,17 @@
     <div class="row-end"><button class="btn primary" type="submit">Save</button></div>
   </form>
 
-  <div class="tile t-pink s7">
+  <form class="tile t-surface s5 form" method="post" action="/settings/retention">
+    <div class="eyebrow">Retention</div>
+    <div class="field"><label for="snapshot-days">Days to keep every snapshot</label><input id="snapshot-days" name="snapshot_days" value="{{ snapshot_days }}" type="number" min="1" max="3650" required></div>
+    <p class="hint">Older history keeps the last snapshot of each week. Digests and confirmations stay available.</p>
+    <div class="field"><label for="work-days">Days to keep run and onboarding files</label><input id="work-days" name="work_days" value="{{ work_days }}" type="number" min="1" max="3650" required></div>
+    <div class="row-end"><button class="btn primary" type="submit">Save retention</button></div>
+  </form>
+
+  <div class="tile t-pink s7 names-tile">
     <div class="eyebrow">Names with no person</div>
-    {% if unmatched %}
-    <ul class="clist">{% for u in unmatched %}<li>
-      <form class="inline grow" method="post" action="/settings/names">
-        <span><b>{{ u.value }}</b> <span class="d">{{ u.kind|lower }} · {{ u.projects }}</span></span>
-        <input type="hidden" name="value" value="{{ u.value }}"><input type="hidden" name="kind" value="{{ u.kind }}">
-        <label class="sr" for="un{{ loop.index }}">Person</label><input id="un{{ loop.index }}" name="person" list="people-list" placeholder="person, new or existing" required maxlength="80">
-        <button class="btn sm" type="submit">Attach</button>
-      </form></li>{% endfor %}</ul>
-    <datalist id="people-list">{% for person in people %}<option value="{{ person.display_name }}">{% endfor %}</datalist>
-    {% else %}<p>Every name in the last snapshot belongs to a person.</p>{% endif %}
+    {{ names(unmatched, people, "/settings") }}
     {% if aliases %}<details><summary class="d">{{ aliases|length }} known {{ plural(aliases|length, "alias") }}</summary><ul class="clist">{% for a in aliases %}<li><span>{{ a.display_name }}</span><span class="d">{{ a.kind|lower }} {{ a.value }}</span></li>{% endfor %}</ul></details>{% endif %}
   </div>
 

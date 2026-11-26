@@ -20,6 +20,7 @@ build/
 /mirrors/
 /runs/
 /digests/
+/backup/
 .env
 .env.*
 

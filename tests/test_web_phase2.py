@@ -70,7 +70,7 @@ def test_add_from_a_repository_review_and_run(live, conn):
     r = post(live, f"/p/WIDGETS/onboarding/{oid}/accept-kind", {"kind": "PERSON"})
     assert re.search(r"Accepted \d+ people", r.text)
     r = post(live, f"/p/WIDGETS/onboarding/{oid}/accept-kind", {"kind": "GATE"})
-    assert "one by one" in r.text
+    assert "Select the individual proposals" in r.text
     gates_now = {g["key"]: g["date"] for g in hand.list_gates(conn, hand.get_project(conn, "WIDGETS")["id"])}
     assert gates_now == {"G1": "2026-12-04", "G2": "2027-01-22"}
 
@@ -146,3 +146,63 @@ def test_pmd_js_reads_the_action_attribute():
     from pathlib import Path
     js = (Path(__file__).resolve().parents[1] / "pmd/web/static/pmd.js").read_text()
     assert 'form.getAttribute("action")' in js and "fetch(form.action" not in js
+
+
+def test_selected_proposals_apply_edits_and_dependencies_together(live, conn):
+    post(live, "/projects", {"sources": str(live.repo)})
+    gate = str(proposal_ids(conn, "GATE")["g1"])
+    evidence = str(proposal_ids(conn, "EVIDENCE")["g1|support runbook written"])
+    url = "/p/WIDGETS/onboarding/1/decide-selected"
+
+    def decide(rows, action="accept", endpoint=url):
+        return post(live, endpoint, {"action": action, "items": json.dumps(rows)})
+
+    assert "Accept gate Missing first" in decide([{"id": gate}, {"id": evidence, "edit_gate_key": "Missing"}]).text
+    assert conn.execute("SELECT count(*) FROM onboarding_decision").fetchone()[0] == 0
+    assert "no longer open" in decide([{"id": gate}], endpoint=url.replace("/1/", "/99/")).text
+    hand.create_project(conn, "OTHER", "Other")
+    assert "no longer open" in decide([{"id": gate}], endpoint=url.replace("WIDGETS", "OTHER")).text
+    result = decide([{"id": evidence, "edit_text": "Approved support runbook"}, {"id": gate}])
+    assert "Accepted 2 selected" in result.text and "Approved support runbook" in result.text
+    assert conn.execute("SELECT text FROM evidence_item").fetchone()[0] == "Approved support runbook"
+    other = str(proposal_ids(conn, "GATE")["g2"])
+    assert "no longer open" in decide([{"id": other}, {"id": evidence}], "reject").text
+    assert hand.proposal_decision(conn, int(other)) is None
+    assert "Rejected 1 selected" in decide([{"id": other}], "reject").text
+    assert "no longer open" in decide([{"id": other}]).text
+
+
+def test_attach_selected_names_is_atomic_and_updates_both_views(live, conn):
+    post(live, "/projects", {"sources": str(live.repo)})
+    post(live, "/run")
+    snap = conn.execute("SELECT snapshot_id FROM current_snapshot").fetchone()[0]
+    pid = hand.get_project(conn, "WIDGETS")["id"]
+    rows = [{"kind": "GITHUB", "value": "rock-1", "person": "Robin"},
+            {"kind": "DOC", "value": "robin.d", "person": "Robin"},
+            {"kind": "WBS", "value": "pr-book", "person": "Paris"}]
+    for row in rows:
+        conn.execute("INSERT INTO unmatched_name(snapshot_id, project_id, kind, value) VALUES (?, ?, ?, ?)",
+                     (snap, pid, row["kind"], row["value"]))
+    assert 'id="alias-GITHUB-rock-1"' in live.get("/settings").text
+    endpoint = "/settings/names/attach-selected"
+    failed = post(live, endpoint, {"items": json.dumps([*rows, dict(rows[0], person="Wrong")]), "back": "/people"})
+    assert "belongs to another person" in failed.text
+    assert conn.execute("SELECT count(*) FROM person_alias").fetchone()[0] == 0
+    result = post(live, endpoint, {"items": json.dumps(rows), "back": "/people"})
+    assert "Attached 3 selected" in result.text
+    for page in (result, live.get("/settings")):
+        assert 'id="alias-GITHUB-rock-1"' not in page.text and "Robin" in page.text and "Paris" in page.text
+    assert conn.execute("SELECT count(DISTINCT person_id), count(*) FROM person_alias").fetchone()[:] == (2, 3)
+
+
+def test_bulk_evidence_rejects_rows_from_other_gates(client, conn):
+    pid = hand.create_project(conn, "TEST", "Test")
+    gate, other = [hand.create_gate(conn, pid, k, k, "2027-01-01") for k in ("G1", "G2")]
+    first, wrong = [str(hand.create_item(conn, g, "Signed off")) for g in (gate, other)]
+    url = f"/p/TEST/gates/{gate}/items/mark-selected"
+    rows = [{"id": first, "note": "Agreed", "evidence_url": "https://example.org/proof"}, {"id": wrong}]
+    assert "has changed" in post(client, url, {"items": json.dumps(rows)}).text
+    assert hand.get_item(conn, pid, int(first))["hand_state"] == ""
+    assert "Marked 1 selected as met." in post(client, url, {"items": json.dumps(rows[:1])}).text
+    item = hand.get_item(conn, pid, int(first))
+    assert (item["hand_state"], item["note"], item["evidence_url"]) == ("MET", "Agreed", "https://example.org/proof")

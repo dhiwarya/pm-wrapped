@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_ui.html" import sticker, badge, blob, segbar, health_dialog, proposal_health, srclink %}
 {% set p = project %}
+{% from "_selection.html" import toolbar %}
 {% block title %}{{ p.name }} · pm·dash{% endblock %}
 {% block main %}
 <div class="vhead">
@@ -53,7 +54,7 @@
     </form>
     <p class="hint">Paused projects stay on Today. Archived projects are hidden and listed in Settings.</p>
   </div>
-  <form class="tile t-red s5 form" method="post" action="/p/{{ p.key }}/delete" data-confirm="Delete {{ p.name }} and all its gates, evidence, tasks and confirmations? This cannot be undone.">
+  <form class="tile t-red s5 form" method="post" action="/p/{{ p.key }}/delete" data-confirm="Delete {{ p.name }}, its records and mirrors, and any daily digest that includes it?">
     <div class="eyebrow">Delete project</div>
     <p>Removes the project and everything in it. Archive it instead if you may need the record.</p>
     <input type="hidden" name="back" value="/p/{{ p.key }}">
@@ -90,6 +91,7 @@
         {% if g.is_past %}{{ g.past }} {{ plural(g.past, "working day") }} past{% else %}{{ g.left }} {{ plural(g.left, "working day") }} left{% endif %}</div>
     </div>
     <div class="gate-status">
+      <a class="btn sm" href="/p/{{ p.key }}/gates/{{ g.key }}/report.md">Download Markdown report</a>
       {% if g.outcome %}{{ sticker(g.outcome) }}{% else %}{{ sticker(g.status) }}{% if g.needs_call %}<span class="muted small">Proposed</span>{% elif g.confirmation %}<span class="muted small">Confirmed {{ g.confirmed_on }}</span>{% endif %}{% endif %}
       {% if not g.outcome and not g.proposal %}<button class="btn" type="button" data-open="health-{{ g.id }}">{{ "Change health" if g.confirmation else "Set health" }}</button>{% endif %}
     </div>
@@ -103,22 +105,23 @@
   <ol class="toplist">
     {% for it in g["items"] %}
     {% set i = it.row %}
-    <li>
+    <li id="evidence-{{ i.id }}">
       <span class="rank">{{ "%02d"|format(loop.index) }}</span>
       <span>
         <span class="state"><b aria-hidden="true">{{ it.look.icon }}</b>{{ it.look.word }}</span><br>
         <span class="t">{{ i.text }}</span>
         {% if i.note or i.evidence_url %}<br><span class="d">{{ i.note }}{% if i.note and i.evidence_url %} · {% endif %}{% if i.evidence_url %}<a href="{{ i.evidence_url }}" rel="noreferrer noopener" target="_blank">evidence link</a>{% endif %}</span>{% endif %}
         {% if it.reason %}<br><span class="d">run: {{ it.reason }}</span>{% endif %}
-        <span class="links">{% for l in it.links %}<span class="tag">{{ LINK_WORD[l.kind] }} {{ l.value }}<form method="post" action="/p/{{ p.key }}/links/{{ l.id }}/remove"><button class="x" type="submit" aria-label="Remove link {{ LINK_WORD[l.kind] }} {{ l.value }}">×</button></form></span>{% endfor %}{% if not it.links and not i.hand_state %}<span class="d">no links, so the run cannot follow this item</span>{% endif %}</span>
+        <span class="links">{% for l in it.links %}<span class="tag">{{ LINK_WORD[l.kind] }} {{ l.value }}<form data-inline method="post" action="/p/{{ p.key }}/links/{{ l.id }}/remove"><button class="x" type="submit" aria-label="Remove link {{ LINK_WORD[l.kind] }} {{ l.value }}">×</button></form></span>{% endfor %}{% if not it.links and not i.hand_state %}<span class="d">no links, so the run cannot follow this item</span>{% endif %}</span>
       </span>
       <span class="acts">
         {% if i.hand_state %}
           {{ badge("hand") }}
-          <form method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state"><input type="hidden" name="state" value=""><button class="btn sm" type="submit">Reopen</button></form>
+          <form data-inline method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state"><input type="hidden" name="state" value=""><button class="btn sm" type="submit">Reopen</button></form>
         {% else %}
+          {% if not g.outcome %}<label class="pick"><input type="checkbox" id="pick-evidence-{{ i.id }}" data-pick="items-{{ g.id }}" value="{{ i.id }}" form="met-{{ i.id }}" aria-label="Select {{ i.text }}"> Select</label>{% endif %}
           <details class="pop"><summary class="btn sm primary">Mark met</summary>
-            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state">
+            <form data-inline class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state" id="met-{{ i.id }}">
               <input type="hidden" name="state" value="MET">
               <div class="field"><label for="mu-{{ i.id }}">Evidence link (optional)</label><input id="mu-{{ i.id }}" name="evidence_url" type="url" placeholder="https://"></div>
               <div class="field"><label for="mn-{{ i.id }}">Note (optional)</label><input id="mn-{{ i.id }}" name="note" maxlength="1000"></div>
@@ -126,7 +129,7 @@
             </form>
           </details>
           <details class="pop"><summary class="btn sm">Waive</summary>
-            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state">
+            <form data-inline class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/state">
               <input type="hidden" name="state" value="WAIVED">
               <div class="field"><label for="wn-{{ i.id }}">Why it no longer applies</label><input id="wn-{{ i.id }}" name="note" required maxlength="1000"></div>
               <button class="btn sm" type="submit">Waive</button>
@@ -139,7 +142,7 @@
               <div class="field"><label for="et-{{ i.id }}">Text</label><input id="et-{{ i.id }}" name="text" value="{{ i.text }}" required maxlength="500"></div>
               <button class="btn sm" type="submit">Save text</button>
             </form>
-            <form class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/links">
+            <form data-inline class="form" method="post" action="/p/{{ p.key }}/items/{{ i.id }}/links">
               <div class="field"><label for="lk-{{ i.id }}">Link the run follows</label>
                 <select id="lk-{{ i.id }}" name="kind">{% for k, w in LINK_WORD.items() %}<option value="{{ k }}">{{ w }}</option>{% endfor %}</select></div>
               <div class="field"><label for="lv-{{ i.id }}">Value</label><input id="lv-{{ i.id }}" name="value" required maxlength="200" placeholder="e.g. 1.023, 1.0, alpha, 112"></div>
@@ -158,6 +161,7 @@
     </li>
     {% endfor %}
   </ol>
+  {% if not g.outcome and g["items"]|rejectattr("row.hand_state")|list %}{{ toolbar("items-" ~ g.id, "/p/" ~ p.key ~ "/gates/" ~ g.id ~ "/items/mark-selected", "/p/" ~ p.key ~ "?tab=gates", "Mark selected met", "evidence") }}{% endif %}
   <form class="inline add-item" method="post" action="/p/{{ p.key }}/gates/{{ g.id }}/items">
     <label class="sr" for="ni-{{ g.id }}">New evidence item for {{ g.key }}</label>
     <input id="ni-{{ g.id }}" name="text" required maxlength="500" placeholder="New evidence item, in the words of whoever accepts the gate">
@@ -205,6 +209,7 @@
 {{ health_dialog(p.key, g, "/p/" ~ p.key ~ "?tab=gates#g-" ~ g.id) }}
 {% endfor %}
 
+{% if gates|selectattr("needs_call")|rejectattr("proposal.value", "equalto", "UNKNOWN")|list %}{{ toolbar("health", "/health/confirm-selected", "/p/" ~ p.key ~ "?tab=gates", "Confirm selected gates", "health", sticky=true) }}{% endif %}
 {% if closed %}
 <details class="tile t-surface">
   <summary><span class="eyebrow">Closed gates ({{ closed|length }})</span></summary>
@@ -239,7 +244,7 @@
 <div class="tile t-night tasks">
   <div class="task-row head" aria-hidden="true"><span>Key</span><span>Task</span><span>Gate</span><span>Owner</span><span>Finish</span><span>Status</span></div>
   {% for t in tasks %}{% set r = t.row %}
-  <details class="task">
+  <details class="task" id="task-{{ r.id }}">
     <summary class="task-row">
       <span class="num">{{ r.key }}</span>
       <span class="t">{{ r.title }}</span>
@@ -288,7 +293,7 @@
             <div class="field"><label for="se{{ r.id }}">Read it</label><select id="se{{ r.id }}" name="enabled"><option value="1" {% if r.enabled %}selected{% endif %}>Yes</option><option value="0" {% if not r.enabled %}selected{% endif %}>No</option></select></div>
             <div class="row-end span3"><button class="btn primary" type="submit">Save source</button></div>
           </form>
-          <form class="row-end" method="post" action="/p/{{ p.key }}/sources/{{ r.id }}/remove" data-confirm="Remove source {{ r.key }}?"><button class="btn sm danger" type="submit">Remove source</button></form>
+          <form class="row-end" method="post" action="/p/{{ p.key }}/sources/{{ r.id }}/remove" data-confirm="Remove source {{ r.key }} and its local mirror?"><button class="btn sm danger" type="submit">Remove source</button></form>
         </details>
       </li>
       {% endfor %}

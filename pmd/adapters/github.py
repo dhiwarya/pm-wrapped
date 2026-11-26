@@ -48,6 +48,12 @@ def extract(folder: Path, *, source_id: int, project_id: int, snapshot_id: int, 
         url = pr.get("html_url", "")
         state = "OPEN" if pr.get("state") == "open" else ("MERGED" if pr.get("merged_at") else "CLOSED")
         head = (pr.get("head") or {}).get("ref", "")
+        head_sha = (pr.get("head") or {}).get("sha") or ""
+        merge_status = pr.get("mergeable_state") or "unknown"
+        if pr.get("mergeable") is False:
+            merge_status = "dirty"
+        elif merge_status == "clean" and pr.get("mergeable") is not True:
+            merge_status = "unknown"
         text = f"{pr.get('title', '')}\n{pr.get('body') or ''}"
         keys = sorted(set(task_rx.findall(text))) if task_rx else []
         keys = [k if isinstance(k, str) else k[0] for k in keys]
@@ -55,23 +61,29 @@ def extract(folder: Path, *, source_id: int, project_id: int, snapshot_id: int, 
         # The newest review of each reviewer counts; requested reviewers with no review are PENDING.
         newest: dict[str, dict] = {}
         for review in sorted(entry.get("reviews", []), key=lambda r: r.get("submitted_at") or ""):
-            login = (review.get("user") or {}).get("login", "")
+            login = ((review.get("user") or {}).get("login") or "").lower()
             if login and review.get("state") in REVIEW_STATES:
                 if review["state"] == "COMMENTED" and login in newest:
                     continue
                 newest[login] = review
-        requested = {u.get("login", ""): "" for u in pr.get("requested_reviewers") or []}
+        requested = {u["login"].lower(): "" for u in pr.get("requested_reviewers") or [] if u.get("login")}
         for req in entry.get("requests", []):
-            if req.get("login") in requested:
-                requested[req["login"]] = req.get("at", "")
+            login = (req.get("login") or "").lower()
+            if login in requested:
+                requested[login] = req.get("at", "")
         overall = "NONE"
         if any(r["state"] == "CHANGES_REQUESTED" for r in newest.values()):
             overall = "CHANGES_REQUESTED"
-        elif requested:
+        elif requested or pr.get("requested_teams"):
             overall = "PENDING"
         elif any(r["state"] == "APPROVED" for r in newest.values()):
             overall = "APPROVED"
-        result.add("pr_state", {**base, "number": number, "title": pr.get("title", "")[:300], "author_raw": (pr.get("user") or {}).get("login", ""),
+        author = (pr.get("user") or {}).get("login") or ""
+        approved_head = bool(head_sha and any(r["state"] == "APPROVED" and r.get("commit_id") == head_sha and login != author.lower()
+                                             for login, r in newest.items()))
+        result.add("pr_state", {**base, "number": number, "title": pr.get("title", "")[:300], "author_raw": author,
+                                "head_sha": head_sha, "approved_head": int(approved_head), "merge_status": merge_status,
+                                "ci_unread": int(bool(entry.get("ci_unread"))),
                                 "state": state, "draft": int(bool(pr.get("draft"))), "base": (pr.get("base") or {}).get("ref", ""),
                                 "head": head, "unit": unit, "task_keys": ";".join(keys), "review_state": overall,
                                 "checks_state": entry.get("checks", "NONE") if state == "OPEN" else "NONE",

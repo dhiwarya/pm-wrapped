@@ -62,6 +62,12 @@
     }
   });
   dialog.addEventListener("submit", () => { submitting = true; });
+  document.addEventListener("pmd:saved", event => {
+    if (!submitting) return;
+    submitting = false;
+    last = 0;
+    if (event.detail.success) show(index + 1);
+  });
   dialog.addEventListener("cancel", event => { event.preventDefault(); window.location.assign("/"); });
   pauseButton.addEventListener("click", pause);
   previous.addEventListener("click", () => show(index - 1));

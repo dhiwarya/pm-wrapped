@@ -43,12 +43,13 @@ def test_unknown_host_is_refused(client):
 def test_tailscale_identity():
     cfg = Config(allowed_login="owner@example.com", tailnet_name="laptop.tail1234.ts.net")
     h = {"host": "laptop.tail1234.ts.net"}
-    assert guard.check(cfg, "GET", h) is None
+    assert guard.check(cfg, "GET", h)[0] == 403
+    assert guard.check(cfg, "GET", {"host": "127.0.0.1:8787", "x-forwarded-for": "100.64.0.1"})[0] == 403
     assert guard.check(cfg, "GET", {**h, "tailscale-user-login": "Owner@Example.com"}) is None
     assert guard.check(cfg, "GET", {**h, "tailscale-user-login": "someone@else.com"})[0] == 403
     assert guard.check(cfg, "GET", {"host": "127.0.0.1:8787"}) is None
     assert guard.check(cfg, "GET", {"host": "[::1]:8787"})[0] == 400  # ::1 not in allowed names
-    post_ok = {**h, "origin": "https://laptop.tail1234.ts.net", "x-pmd-request": "1"}
+    post_ok = {**h, "origin": "https://laptop.tail1234.ts.net", "x-pmd-request": "1", "tailscale-user-login": "owner@example.com"}
     assert guard.check(cfg, "POST", post_ok) is None
 
 

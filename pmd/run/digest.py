@@ -7,6 +7,7 @@ from datetime import date
 
 from ..data import run as R
 from ..rules.changes import highlights
+from ..rules.pulls import assess
 from ..rules.workdays import working_days_left
 
 # Identity and displayed fields. Source locations may move without a change to the value.
@@ -14,7 +15,8 @@ TABLES = {
     "task_state": (("key",), ("title", "owner_raw", "gate_key", "start", "finish", "status", "depends_on")),
     "unit_state": (("unit",), ("stage", "status", "blocked", "lead_raw")),
     "unit_stage_state": (("unit", "stage"), ("state",)),
-    "pr_state": (("number",), ("title", "state", "review_state", "checks_state", "merged_at")),
+    "pr_state": (("number",), ("title", "state", "review_state", "checks_state", "merged_at",
+                               "draft", "merge_status", "approved_head", "head_sha", "ci_unread")),
     "review_state": (("pr_number", "reviewer_raw"), ("state", "submitted_at")),
     "issue_state": (("number",), ("title", "state", "assignees", "labels")),
     "blocker": (("kind", "subject_type", "subject_key"), ("detail", "person_raw")),
@@ -132,6 +134,8 @@ def build(conn, run_id, snapshot, projects, day, changes_, at):
         if item["project_id"] in summary:
             summary[item["project_id"]].append(item)
     entries, waiting = [], []
+    pull_sections = []
+    refreshed = {r[0] for r in conn.execute("SELECT DISTINCT source_id FROM run_source WHERE run_id = ? AND github_read = 1", (run_id,))}
     owner = R.setting(conn, "owner_person_id", "")
     needs_call = 0
     for p in projects:
@@ -144,6 +148,19 @@ def build(conn, run_id, snapshot, projects, day, changes_, at):
         change_lines = [change_line]
         change_lines.extend(f"Merged PR #{r['subject_key']} · {json.loads(r['new'])['title']}" for r in groups["PRs merged"])
         change_lines.extend(json.loads(row["new"])["text"] for row in groups["New notes"])
+        # Include the day's actionable queue even when a manual run already saw it.
+        repos = {s["id"]: s["github_repo"] for s in R.sources(conn, pid) if s["github_repo"]}
+        pr_lines = [f"PR readiness unavailable for {repo}. See Runs for the GitHub read status."
+                    for source_id, repo in repos.items() if source_id not in refreshed]
+        for pr in R.rows(conn, "pr_state", snapshot, pid):
+            if pr["state"] != "OPEN" or pr["source_id"] not in repos:
+                continue
+            result = assess(pr, stale=pr["carried_over"] or pr["source_id"] not in refreshed)
+            if result.label in ("Ready to merge", "Needs attention") or (pr["ci_unread"] and not pr["carried_over"]):
+                repo = repos[pr["source_id"]]
+                pr_lines.append(f"{result.label} · {repo}#{pr['number']} · {pr['title']}\n  {result.reason}\n  {pr['src_url']}")
+        if pr_lines:
+            pull_sections.append(f"{p['name']} · Pull requests\n" + "\n".join(sorted(pr_lines)))
         blockers = R.rows(conn, "blocker", snapshot, pid)
         if blockers:
             count = sum(r["grp"] == "blocker" and r["change"] == "ADDED" for r in others)
@@ -189,7 +206,7 @@ def build(conn, run_id, snapshot, projects, day, changes_, at):
     closing = _card("CLOSING", "Run summary", [f"{sources} sources read · {len(problems)} problems", f"Model facts · {kept} kept · {dropped} dropped", *(r[0] for r in problems)])
     wait = [_card("WAITING", "Waiting on you", waiting, hero=len(waiting))] if waiting else []
     full = [opening, *entries, *wait, closing]
-    lines = [f"PMD digest · {day.isoformat()}", *(f"{c['title']}\n" + "\n".join(c["lines"]) for c in full)]
+    lines = [f"PMD digest · {day.isoformat()}", *(f"{c['title']}\n" + "\n".join(c["lines"]) for c in full), *pull_sections]
     budget = 10 - len(wait)
     if len(entries) > budget:
         extra = entries[budget - 1:]

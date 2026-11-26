@@ -26,6 +26,9 @@ class Config:
     extra_hosts: tuple[str, ...] = ()
     codex_fallback: bool = True
     codex_model: str | None = None
+    claude_model: str | None = None
+    claude_effort: str | None = None
+    codex_effort: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -54,4 +57,7 @@ def load(path: Path | None = None) -> Config:
         extra_hosts=tuple(raw.get("extra_hosts", ())),
         codex_fallback=raw.get("codex_fallback", True),
         codex_model=raw.get("codex_model") or None,
+        claude_model=raw.get("claude_model") or None,
+        claude_effort=raw.get("claude_effort") or None,
+        codex_effort=raw.get("codex_effort") or None,
     )

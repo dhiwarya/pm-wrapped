@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Pull requests · pm·dash{% endblock %}
+{% block main %}
+<div class="vhead"><h1>Pull requests</h1></div>
+{% if pulls.sources %}
+  {% if head.snapshot %}<p>GitHub reviews, checks and merge requirements as of {{ head.snap_when }}.</p>{% endif %}
+  {% if pulls.unread %}
+    <section class="tile t-butter pr-group">
+      <h2>Awaiting GitHub data</h2>
+      <ul class="pr-list">{% for source in pulls.unread %}<li>{{ source.project }} · {{ source.github_repo }}</li>{% endfor %}</ul>
+      {% if not has_token %}<p>Add a read-only GitHub token to <code>secrets/github-token</code> in the PM Dash data directory, then choose <strong>Run now</strong>.</p>
+      {% elif not head.snapshot %}<p>Choose <strong>Run now</strong> to read these repositories.</p>
+      {% else %}<p>Choose <strong>Run now</strong> to refresh these repositories. <a href="/runs">See run details</a></p>{% endif %}
+    </section>
+  {% endif %}
+  {% for label, items in pulls.groups.items() if items %}
+    <section class="tile t-surface pr-group">
+      <h2>{{ label }} · {{ items|length }}</h2>
+      <ul class="pr-list">{% for item in items %}
+        <li><div class="muted small">{{ item.pr.project }} · {{ item.pr.github_repo }}{% if item.pr.head_sha %} · <code>{{ item.pr.head_sha[:7] }}</code>{% endif %}</div>
+          <strong>{% if item.url %}<a href="{{ item.url }}">#{{ item.pr.number }} {{ item.pr.title }}</a>{% else %}#{{ item.pr.number }} {{ item.pr.title }}{% endif %}</strong>
+          <div>{{ item.reason }}</div></li>
+      {% endfor %}</ul>
+    </section>
+  {% else %}
+    {% if not pulls.unread %}<p>No open pull requests in this snapshot.</p>{% endif %}
+  {% endfor %}
+{% else %}
+  <section class="tile t-surface"><h2>No GitHub sources yet</h2><p>Add a GitHub repository URL to an active project’s Sources tab to track its pull requests.</p></section>
+{% endif %}
+{% endblock %}
