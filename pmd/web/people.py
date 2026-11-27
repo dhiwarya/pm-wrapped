@@ -36,14 +36,19 @@ def build(conn, now: datetime):
     people = hand.list_people(conn)
     by_name = {p["display_name"].strip().casefold(): p["id"] for p in people}
     aliases = {(r["kind"], r["value"].strip().casefold()): r["person_id"] for r in conn.execute("SELECT * FROM person_alias")}
-    cards = {p["id"]: {"id": p["id"], "name": p["display_name"], "colour": hand.COLOURS[index % len(hand.COLOURS)],
+    cards = {p["id"]: {"id": p["id"], "name": p["display_name"], "projects": [], "colour": hand.COLOURS[index % len(hand.COLOURS)],
                        "reviews": [], "prs": [], "in_work": [], "late": [], "due": []}
              for index, p in enumerate(people)}
+
+    for row in conn.execute("SELECT pp.person_id, p.key FROM project_person pp JOIN project p ON p.id = pp.project_id "
+                            "WHERE p.state <> 'ARCHIVED' ORDER BY p.key"):
+        cards[row["person_id"]]["projects"].append(row["key"])
 
     def person(kind, raw, stored):
         name = raw.strip().casefold()
         return aliases.get((kind, name), by_name.get(name, stored))
 
+    review_groups = views.pull_reviews(conn, snap_id)
     for project in hand.list_projects(conn):
         pid = project["id"]
         holidays = hand.holiday_dates(conn, pid)
@@ -53,6 +58,7 @@ def build(conn, now: datetime):
             author = person("GITHUB", pr["author_raw"], pr["author_person_id"])
             if author in cards:
                 cards[author]["prs"].append({"project": project["key"], "title": pr["title"], "src": present.citation(pr, repos, "pr"),
+                                             "pr": pr, "reviews": review_groups.get((pid, pr["source_id"], pr["number"]), []),
                                              "carried": pr["carried_over"]})
         for review in views.snapshot_rows(conn, "review_state", snap_id, pid):
             pr = pulls.get((review["source_id"], review["pr_number"]))
@@ -62,9 +68,11 @@ def build(conn, now: datetime):
             if reviewer in cards:
                 started = _started(review["requested_at"], pr["created_at"], tz)
                 cards[reviewer]["reviews"].append({"project": project["key"], "title": pr["title"], "started": started,
+                                                    "pr": pr, "reviews": review_groups.get((pid, pr["source_id"], pr["number"]), []),
+                                                    "pr_url": present.src_link(pr, repos)["url"],
                                                     "age": working_days_between(started, day, holidays) if started else None,
                                                     "src": present.citation(review, repos, "review"), "carried": review["carried_over"]})
-        for task in present.timeline_tasks(conn, project, day):
+        for task in present.project_tasks(conn, project, day, include_hand=True):
             row = task["row"]
             owner = row["owner_person_id"] if task["origin"] == "HAND" else person("WBS", task["owner"], row["owner_person_id"])
             if owner not in cards or row["status"] in FINISHED_TASK:

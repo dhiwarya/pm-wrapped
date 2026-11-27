@@ -1,12 +1,14 @@
 {% extends "base.html" %}
+{% from "_team.html" import field as team_field %}
 {% block title %}Add project · pm·dash{% endblock %}
 {% block main %}
 <div class="vhead"><h1>Add project</h1><p>Point PM Dash at its repositories, or keep it by hand.</p></div>
 <div class="bento">
   <form class="tile t-lime s7 form" method="post" action="/projects">
     <div class="eyebrow">With sources · recommended</div>
-    <h3 class="big-line">The agent proposes the setup.</h3>
+    <h3 class="big-line">Start with your team.</h3>
     <input type="hidden" name="back" value="/projects/new">
+    {{ team_field() }}
     <div class="field"><label for="src">Repositories, one per line</label>
       <textarea id="src" name="sources" rows="3" required placeholder="https://github.com/owner/repo&#10;/home/me/code/another-repo"></textarea>
       <p class="hint">A GitHub URL, or a path to a git repository on this machine. A plain folder is refused: make it a git repository first.</p></div>
@@ -14,8 +16,8 @@
       <div class="field span2"><label for="sn">Name (optional)</label><input id="sn" name="name" maxlength="120" placeholder="proposed from the README"></div>
       <div class="field"><label for="sk">Key (optional)</label><input id="sk" name="key" maxlength="12" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,11}" placeholder="from the repo name"></div>
     </div>
-    <p class="hint">The agent reads the repositories and proposes the scope, gates and dates, evidence, the WBS mapping, patterns and people. You accept each one. Its model call has a money limit set in Settings.</p>
-    <div class="row-end"><button class="pill" type="submit">Add and read</button></div>
+    <p class="hint">The agent reads the repositories and proposes the scope, gates and dates, evidence, the WBS.csv mapping and patterns. You accept each one. Its model call has a money limit set in Settings.</p>
+    <div class="row-end"><button class="pill" type="submit">Save team and read sources</button></div>
   </form>
   <form class="tile t-surface s5 form" method="post" action="/projects">
     <div class="eyebrow">By hand</div>

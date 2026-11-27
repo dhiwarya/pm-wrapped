@@ -10,6 +10,8 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 
+from ..adapters.wbs import is_wbs_path
+
 from .db import RUN_TABLES, transaction
 
 SRC_COLUMNS = ("src_source_id", "src_commit", "src_path", "src_line_from", "src_line_to", "src_object", "src_number", "src_url")
@@ -304,7 +306,7 @@ def existing_setup(conn: sqlite3.Connection, project_id: int) -> dict[str, set[s
     """What the project already has, by proposal identity (Part 2 §6-7)."""
     setting_row = conn.execute("SELECT * FROM project_setting WHERE project_id = ?", (project_id,)).fetchone()
     proj = conn.execute("SELECT * FROM project WHERE id = ?", (project_id,)).fetchone()
-    have: dict[str, set[str]] = {k: set() for k in ("PROJECT", "GATE", "EVIDENCE", "WBS", "DASHBOARD_FILE", "PATTERN", "PERSON", "HOLIDAY")}
+    have: dict[str, set[str]] = {k: set() for k in ("PROJECT", "GATE", "EVIDENCE", "WBS", "DASHBOARD_FILE", "PATTERN", "HOLIDAY")}
     if proj["scope_note"].strip():
         have["PROJECT"].add("project")
     for g in gates(conn, project_id, include_closed=True):
@@ -313,7 +315,7 @@ def existing_setup(conn: sqlite3.Connection, project_id: int) -> dict[str, set[s
         "SELECT i.text, g.key FROM evidence_item i JOIN gate g ON g.id = i.gate_id WHERE g.project_id = ?", (project_id,)
     ):
         have["EVIDENCE"].add(evidence_identity(row["key"], row["text"]))
-    if setting_row["wbs_path"]:
+    if is_wbs_path(setting_row["wbs_path"]):
         have["WBS"].add("wbs")
     if setting_row["dashboard_json_path"]:
         have["DASHBOARD_FILE"].add("dashboard")
@@ -321,7 +323,6 @@ def existing_setup(conn: sqlite3.Connection, project_id: int) -> dict[str, set[s
         have["PATTERN"].add("BRANCH_UNIT")
     if setting_row["task_key_pattern"]:
         have["PATTERN"].add("TASK_KEY")
-    have["PERSON"] = set(people_index(conn))
     have["HOLIDAY"] = {r["date"] for r in conn.execute("SELECT date FROM holiday WHERE project_id = ?", (project_id,))}
     return have
 

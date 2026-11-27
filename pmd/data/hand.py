@@ -10,6 +10,8 @@ import re
 import sqlite3
 from datetime import date
 
+from ..adapters.wbs import is_wbs_path
+
 from .db import transaction
 from .retention import forget_project
 
@@ -379,6 +381,26 @@ def move_item(conn: sqlite3.Connection, item_id: int, direction: object) -> None
 
 # ---------------------------------------------------------------- people
 
+def project_team(conn: sqlite3.Connection, project_id: int) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT display_name FROM person JOIN project_person ON person.id = person_id "
+        "WHERE project_id = ? ORDER BY display_name COLLATE NOCASE", (project_id,)
+    )]
+
+
+def set_project_team(conn: sqlite3.Connection, project_id: int, raw_names: str) -> None:
+    names = [name.strip() for name in raw_names.splitlines() if name.strip()]
+    if not names:
+        raise InputError("Enter at least one team member before starting onboarding.")
+    with transaction(conn):
+        members = {_person_id(conn, name) for name in names}
+        current = {r[0] for r in conn.execute("SELECT person_id FROM project_person WHERE project_id = ?", (project_id,))}
+        conn.executemany("DELETE FROM project_person WHERE project_id = ? AND person_id = ?",
+                         [(project_id, member) for member in current - members])
+        conn.executemany("INSERT INTO project_person(project_id, person_id) VALUES (?, ?)",
+                         [(project_id, member) for member in members - current])
+
+
 def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM person ORDER BY display_name COLLATE NOCASE").fetchall()
 
@@ -621,6 +643,9 @@ def _relative_path(value: object, label: str) -> str:
 def set_reading(conn: sqlite3.Connection, project_id: int, *, wbs_source: object = "", wbs_path: object = "", wbs_mapping: object = "",
                 dashboard_source: object = "", dashboard_path: object = "", branch_pattern: object = "", task_key_pattern: object = "",
                 prose_reading: object = "1") -> None:
+    path = _relative_path(wbs_path, "WBS path")
+    if path and not is_wbs_path(path):
+        raise InputError("The timeline file must be named WBS.csv. Include its repository-relative path.")
     mapping = _text(wbs_mapping, "Column mapping", max_len=8000)
     if mapping:
         import json
@@ -639,7 +664,7 @@ def set_reading(conn: sqlite3.Connection, project_id: int, *, wbs_source: object
             raise InputError("The task-key pattern is not a valid regular expression.") from None
     values = {
         "wbs_source_id": _source_id_or_none(conn, project_id, wbs_source),
-        "wbs_path": _relative_path(wbs_path, "WBS path"),
+        "wbs_path": path,
         "wbs_mapping": mapping,
         "dashboard_source_id": _source_id_or_none(conn, project_id, dashboard_source),
         "dashboard_json_path": _relative_path(dashboard_path, "Dashboard file path"),
@@ -738,6 +763,8 @@ def decide_proposal(conn: sqlite3.Connection, project_id: int, proposal_id: int,
     action_value = _choice(action, ("accept", "edit", "reject", "undo"), "Action")
     with transaction(conn):
         p = _proposal(conn, project_id, proposal_id)
+        if p["kind"] == "PERSON":
+            raise InputError("Enter project members in the team list on the Sources tab.")
         last = proposal_decision(conn, proposal_id)
         if action_value == "undo":
             if not last or last["decision"] != "REJECTED":
@@ -786,6 +813,8 @@ def _apply_proposal(conn: sqlite3.Connection, project_id: int, kind: str, payloa
             raise InputError("The source of this file is no longer in the project.")
         path = _relative_path(payload.get("path"), "Path")
         if kind == "WBS":
+            if not is_wbs_path(path):
+                raise InputError("The timeline file must be named WBS.csv. Look for new setup on the Sources tab.")
             mapping = payload.get("mapping")
             _update_setting_fields(conn, project_id, wbs_source_id=source["id"], wbs_path=path,
                                    wbs_mapping=mapping if isinstance(mapping, str) else json.dumps(mapping))
@@ -806,14 +835,6 @@ def _apply_proposal(conn: sqlite3.Connection, project_id: int, kind: str, payloa
         else:
             raise InputError("Unknown pattern kind.")
         return [f"project_setting:{project_id}"]
-    if kind == "PERSON":
-        pid = _person_id(conn, payload.get("display_name"))
-        if pid is None:
-            raise InputError("A person needs a name.")
-        for alias in payload.get("aliases", []) or []:
-            if isinstance(alias, dict) and alias.get("value"):
-                add_alias(conn, pid, alias.get("kind", "DOC"), alias["value"])
-        return [f"person:{pid}"]
     if kind == "HOLIDAY":
         return [f"holiday:{add_holiday(conn, payload.get('date'), payload.get('label', ''), project_id)}"]
     raise InputError("Unknown proposal kind.")

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..adapters.aidlc import STAGES
 from ..data import hand, views
 from ..rules.changes import highlights
+from ..adapters.wbs import is_wbs_path
 from ..rules.pulls import assess
 from ..rules.gates import need_call_count, split_next_gate, task_days_late
 from ..rules.workdays import working_days_left, working_days_past
@@ -260,10 +261,12 @@ def pull_queue(conn, head):
     sources = views.pull_sources(conn, snap["run_id"] if snap else None)
     refreshed = {s["id"] for s in sources if s["refreshed"]}
     groups = {label: [] for label in ("Needs attention", "Ready to merge", "Waiting", "Draft", "Unverified")}
+    reviews = views.pull_reviews(conn, snap["id"] if snap else None)
     for pr in views.open_pulls(conn, snap["id"] if snap else None):
         stale = head["stale"] or pr["carried_over"] or pr["source_id"] not in refreshed
         result = assess(pr, stale=stale)
-        groups[result.label].append({"pr": pr, "reason": result.reason, "url": src_link(pr, {})["url"]})
+        groups[result.label].append({"pr": pr, "reason": result.reason, "url": src_link(pr, {})["url"],
+                                     "reviews": reviews.get((pr["project_id"], pr["source_id"], pr["number"]), [])})
     return {"groups": groups, "unread": [s for s in sources if not s["refreshed"]], "sources": sources}
 
 
@@ -350,7 +353,7 @@ def build_project(conn: sqlite3.Connection, project: sqlite3.Row, now: datetime)
         "global_holidays": hand.list_holidays(conn), "people": hand.list_people(conn), "link_kinds": LINK_WORD,
         "sources": [{"row": s, "read": reads.get(s["id"]), "read_when": when_text(reads[s["id"]]["commit_date"], tz, now) if s["id"] in reads and reads[s["id"]]["commit_date"] else ""} for s in sources],
         "setting": hand.project_setting(conn, project["id"]),
-        "onboardings": views.onboardings(conn, project["id"])[:5],
+        "team": hand.project_team(conn, project["id"]), "onboardings": views.onboardings(conn, project["id"])[:5],
         "open_proposals": views.open_proposal_count(conn, project["id"]),
     }
 
@@ -403,26 +406,33 @@ def build_units(conn: sqlite3.Connection, project: sqlite3.Row) -> dict:
 TIMELINE_COLOURS = {"IN_PROGRESS": "#5b8cff", "DONE": "#8b8894", "NOT_STARTED": "#46424f", "BLOCKED": "#f0414f", "DEFERRED": "#2f2c36", "": "#46424f"}
 
 
-def timeline_tasks(conn: sqlite3.Connection, project: sqlite3.Row, day: date) -> list[dict]:
+def project_tasks(conn: sqlite3.Connection, project: sqlite3.Row, day: date, *, include_hand: bool = False) -> list[dict]:
     snap = views.current_snapshot(conn)
     holidays = hand.holiday_dates(conn, project["id"])
     out = []
+    settings = hand.project_setting(conn, project["id"])
+    enabled = {s["id"] for s in hand.list_sources(conn, project["id"]) if s["enabled"]}
     for t in views.snapshot_rows(conn, "task_state", snap["id"] if snap else None, project["id"]):
-        out.append({"key": t["key"], "title": t["title"], "owner": t["owner_raw"], "gate": (t["gate_key"] or "").split(";")[0],
+        if (not is_wbs_path(t["src_path"] or "") or t["src_source_id"] not in enabled or
+                t["src_source_id"] != settings["wbs_source_id"] or t["src_path"] != settings["wbs_path"]):
+            continue
+        out.append({"key": t["key"], "title": t["title"], "owner": t["owner_raw"], "gate": (t["wbs_gates"] or t["gate_key"] or "").split(";")[0],
                     "start": t["start"], "finish": t["finish"], "status": t["status"], "origin": "WBS",
                     "late": task_days_late(t, day, holidays), "row": t})
+    if not include_hand:
+        return out
     for t in hand.list_tasks(conn, project["id"]):
         out.append({"key": t["key"], "title": t["title"], "owner": t["owner"] or "", "gate": t["gate_key"], "start": t["start"],
                     "finish": t["finish"], "status": t["status"], "origin": "HAND", "late": task_days_late(t, day, holidays), "row": t})
     return out
 
 
-def timeline_svg(tasks: list[dict], gates: list[sqlite3.Row], day: date) -> str:
+def timeline_svg(tasks: list[dict], day: date) -> str:
     """V-2 drawn on the server as SVG (Design §6-2). Late and blocked are labelled in text."""
     dated = [t for t in tasks if t["start"] or t["finish"]]
     if not dated:
         return ""
-    dates = [date.fromisoformat(d) for t in dated for d in (t["start"], t["finish"]) if d] + [date.fromisoformat(g["date"]) for g in gates] + [day]
+    dates = [date.fromisoformat(d) for t in dated for d in (t["start"], t["finish"]) if d] + [day]
     first = min(dates) - timedelta(days=min(dates).weekday())
     last = max(dates) + timedelta(days=3)
     span = max((last - first).days, 14)
@@ -435,7 +445,7 @@ def timeline_svg(tasks: list[dict], gates: list[sqlite3.Row], day: date) -> str:
     groups: dict[str, list[dict]] = {}
     for t in sorted(dated, key=lambda t: (t["start"] or t["finish"], t["key"])):
         groups.setdefault(t["gate"] or "", []).append(t)
-    order = [g["key"] for g in gates if g["key"] in groups] + [k for k in groups if k not in {g["key"] for g in gates}]
+    order = list(groups)
     height = top + sum(len(groups[k]) + 1 for k in order) * rh + 10
     out = [f'<svg class="timeline" viewBox="0 0 {width} {height}" role="img" aria-label="Timeline of tasks and gates. The table view has the same rows.">']
     d = first
@@ -446,18 +456,12 @@ def timeline_svg(tasks: list[dict], gates: list[sqlite3.Row], day: date) -> str:
             out.append(f'<line x1="{x(d):.1f}" x2="{x(d):.1f}" y1="{top - 6}" y2="{height - 6}" stroke="rgba(255,255,255,.08)"/>')
             out.append(f'<text x="{x(d) + 4:.1f}" y="{top - 12}">{d.day} {d:%b}</text>')
         d += timedelta(days=1)
-    for g in gates:
-        gx = x(date.fromisoformat(g["date"]) + timedelta(days=1))
-        out.append(f'<line x1="{gx:.1f}" x2="{gx:.1f}" y1="26" y2="{height - 6}" stroke="rgba(255,255,255,.28)"/>')
-        out.append(f'<rect x="{gx - 22:.1f}" y="6" width="44" height="20" rx="10" fill="#ffd84a"/>')
-        out.append(f'<text class="gk" x="{gx:.1f}" y="20" text-anchor="middle">{escape(g["key"][:6])}</text>')
     tx = x(day) + dw / 2
     out.append(f'<line x1="{tx:.1f}" x2="{tx:.1f}" y1="{top - 6}" y2="{height - 6}" stroke="#c9f23f" stroke-width="2.5"/>')
     out.append(f'<text x="{left - 12}" y="{top - 12}" text-anchor="end" class="today">Today · {day:%a} {day.day} {day:%b}</text>')
     y = top
-    gate_names = {g["key"]: g["name"] for g in gates}
     for key in order:
-        title = f"{key} · {gate_names.get(key, '')}" if key else "No gate"
+        title = key or "No gate"
         out.append(f'<text class="grp" x="8" y="{y + 19}">{escape(title[:40])}</text>')
         y += rh
         for t in groups[key]:

@@ -307,6 +307,7 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
                 name = str(f.get("name") or "").strip() or first
                 key = str(f.get("key") or "").strip().upper() or hand.unique_project_key(conn, first)
                 pid = hand.create_project(conn, key, name, f.get("description"), f.get("scope_note"))
+                hand.set_project_team(conn, pid, str(f.get("team", "")))
                 for loc in locations:
                     hand.add_source(conn, pid, loc)
             app.state.spawn(["onboard", "--project", key])
@@ -648,14 +649,14 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
         if chosen is None:
             return render(request, "timeline.html", {"project": None, "projects": []}, nav="timeline", conn=conn)
         day = present.today(conn, app.state.now())
-        tasks = present.timeline_tasks(conn, chosen, day)
+        tasks = present.project_tasks(conn, chosen, day)
         owners = sorted({t["owner"] for t in tasks if t["owner"]})
         shown = [t for t in tasks if (not gate or t["gate"] == gate) and (not owner or t["owner"] == owner)
                  and (not status or t["status"] == status) and (not late or t["late"])]
-        gates = hand.list_gates(conn, chosen["id"])
+        gates = sorted({t["gate"] for t in tasks if t["gate"]})
         ctx = {"project": chosen, "projects": hand.list_projects(conn), "tasks": shown, "all_count": len(tasks), "gates": gates,
                "owners": owners, "f": {"gate": gate, "owner": owner, "status": status, "late": late, "view": view},
-               "svg": present.timeline_svg(shown, [g for g in gates if not gate or g["key"] == gate], day), "repos": present.repos_of(conn),
+               "svg": present.timeline_svg(shown, day), "repos": present.repos_of(conn),
                "src_link": present.src_link}
         return render(request, "timeline.html", ctx, nav="timeline", conn=conn)
 
@@ -799,6 +800,7 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
                 raise InputError("Add a source first: a GitHub URL or a git repository on this machine.")
             if views.running(conn):
                 raise InputError("A run or onboarding is in progress. Wait for it to end.")
+            hand.set_project_team(conn, project["id"], str(f.get("team", "")))
             latest = views.onboarding(conn, project["id"])
             app.state.spawn(["onboard", "--project", key])
             return "The onboarding agent is reading the sources.", f"/p/{key}/onboarding?after={latest['id'] if latest else 0}"
@@ -810,15 +812,16 @@ def create_app(config: Config, *, now: Callable[[], datetime] | None = None, con
     def onboarding_view(request: Request, key: str, oid: int | None = None, after: int | None = None,
                         conn: sqlite3.Connection = Depends(get_conn)):
         project = project_or_404(conn, key)
+        team = hand.project_team(conn, project["id"])
         ob = views.onboarding(conn, project["id"], oid)
         if after is not None and oid is None and (ob is None or ob["id"] <= after):
             # The new onboarding process has not written its row yet (Part 1 §2-1).
-            return render(request, "onboarding.html", {"project": project, "onboarding": None, "starting": after,
+            return render(request, "onboarding.html", {"project": project, "team": team, "onboarding": None, "starting": after,
                                                        "tile": present.COLOUR_TILE[project["colour"]]}, nav="project", conn=conn)
         if ob is None:
-            return render(request, "onboarding.html", {"project": project, "onboarding": None, "tile": present.COLOUR_TILE[project["colour"]]},
+            return render(request, "onboarding.html", {"project": project, "team": team, "onboarding": None, "tile": present.COLOUR_TILE[project["colour"]]},
                           nav="project", conn=conn)
-        return render(request, "onboarding.html", present.build_review(conn, project, ob, app.state.now()), nav="project", conn=conn)
+        return render(request, "onboarding.html", {"team": team, **present.build_review(conn, project, ob, app.state.now())}, nav="project", conn=conn)
 
     @app.post("/p/{key}/proposals/{pid}")
     async def proposal_decide(request: Request, key: str, pid: int, conn: sqlite3.Connection = Depends(get_conn)):

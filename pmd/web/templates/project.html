@@ -2,6 +2,7 @@
 {% from "_ui.html" import sticker, badge, blob, segbar, health_dialog, proposal_health, srclink %}
 {% set p = project %}
 {% from "_selection.html" import toolbar %}
+{% from "_team.html" import field as team_field %}
 {% block title %}{{ p.name }} · pm·dash{% endblock %}
 {% block main %}
 <div class="vhead">
@@ -308,10 +309,10 @@
   </div>
   <div class="tile t-lime s5">
     {{ blob("LIME") }}
-    <div class="eyebrow">Onboarding</div>
+    <div class="eyebrow" id="project-onboarding">Onboarding</div>
     <h3 class="big-line">Let the agent look for new setup.</h3>
-    <p>It reads the sources and proposes gates, evidence, the WBS mapping, patterns and people that are not here yet. Nothing is stored until you accept it.</p>
-    <form method="post" action="/p/{{ p.key }}/onboard"><button class="pill" type="submit" {% if head and head.running %}disabled{% endif %}>Look for new setup</button></form>
+    <p>It reads the sources and proposes gates, evidence, the WBS.csv mapping and patterns that are not here yet. Nothing is stored until you accept it.</p>
+    <form method="post" action="/p/{{ p.key }}/onboard">{{ team_field(team) }}<button class="pill" type="submit" {% if head and head.running %}disabled{% endif %}>Save team and look for new setup</button></form>
     {% if onboardings %}<ul class="clist">{% for o in onboardings %}<li><a href="/p/{{ p.key }}/onboarding/{{ o.id }}">Onboarding {{ o.id }}</a><span class="d">{{ o.result|lower }} · {{ o.started_at[:10] }}</span></li>{% endfor %}</ul>{% endif %}
   </div>
 </div>
@@ -324,7 +325,7 @@
   <div class="eyebrow">How the run reads this project {{ badge("hand") }}</div>
   <div class="grid3">
     <div class="field"><label for="ws">WBS source</label><select id="ws" name="wbs_source"><option value="">none</option>{% for s in sources %}<option value="{{ s.row.id }}" {% if st.wbs_source_id == s.row.id %}selected{% endif %}>{{ s.row.key }}</option>{% endfor %}</select></div>
-    <div class="field span2"><label for="wp">WBS file path</label><input id="wp" name="wbs_path" value="{{ st.wbs_path }}" placeholder="e.g. plan/wbs.csv"></div>
+    <div class="field span2"><label for="wp">WBS.csv path</label><input id="wp" name="wbs_path" value="{{ st.wbs_path }}" placeholder="e.g. plan/wbs.csv"></div>
     <div class="field span3"><label for="wm">WBS column mapping (JSON)</label><textarea id="wm" name="wbs_mapping" rows="8" class="mono">{{ json_pretty(st.wbs_mapping|fromjson) if st.wbs_mapping else "" }}</textarea>
       <p class="hint">Maps PM Dash fields (key, title, gate, owner, start, finish, status, depends_on, remaining) to the file's column names, plus date_format and the status words. Onboarding proposes it.</p></div>
     <div class="field"><label for="ds">Dashboard file source</label><select id="ds" name="dashboard_source"><option value="">none</option>{% for s in sources %}<option value="{{ s.row.id }}" {% if st.dashboard_source_id == s.row.id %}selected{% endif %}>{{ s.row.key }}</option>{% endfor %}</select></div>

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_ui.html" import sticker, blob, segbar, health_dialog, proposal_health, srclink %}
 {% from "_selection.html" import toolbar %}
+{% from "_pull.html" import details as pull_details %}
 {% block title %}Today · pm·dash{% endblock %}
 {% block main %}
 <section class="hero">
@@ -21,8 +22,8 @@
   {% for label, items in [('Needs attention', attention), ('Ready to merge', ready)] if items %}
     <h3>{{ label }} · {{ items|length }}</h3>
     <ul class="pr-list">{% for item in items[:3] %}
-      <li>{% if item.url %}<a href="{{ item.url }}">{{ item.pr.github_repo }}#{{ item.pr.number }}</a>{% else %}{{ item.pr.github_repo }}#{{ item.pr.number }}{% endif %}
-        · {{ item.pr.title }}<br><span class="muted">{{ item.reason }}</span></li>
+      <li><span class="muted small">{{ item.pr.project }} · {{ item.pr.github_repo }}</span>
+          {{ pull_details(item.pr, item.reviews, item.url) }}<div>{{ item.reason }}</div></li>
     {% endfor %}</ul>
   {% endfor %}
   {% if not attention and not ready and not pulls.unread and not head.stale %}<p>No PRs are flagged for attention or ready to merge.</p>{% endif %}

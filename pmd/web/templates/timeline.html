@@ -2,22 +2,26 @@
 {% from "_ui.html" import srclink %}
 {% block title %}Timeline · pm·dash{% endblock %}
 {% block main %}
-<div class="vhead"><h1>Timeline</h1>{% if project %}<p>{{ project.name }} · tasks from the WBS file and tasks kept by hand, grouped by gate</p>{% endif %}</div>
+<div class="vhead"><h1>Timeline</h1>{% if project %}<p>{{ project.name }} · tasks from WBS.csv, grouped by gate</p>{% endif %}</div>
 {% if not project %}
 <section class="tile t-night empty"><div class="eyebrow">No project</div><h2>Add a project first.</h2><a class="pill" href="/projects/new">Add project</a></section>
 {% else %}
-<form class="filters" method="get" action="/timeline">
+{% if all_count or projects|length > 1 %}<form class="filters" method="get" action="/timeline">
   {% if projects|length > 1 %}<label>Project <select name="project">{% for p in projects %}<option value="{{ p.key }}" {% if p.key == project.key %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>{% else %}<input type="hidden" name="project" value="{{ project.key }}">{% endif %}
-  <label>Gate <select name="gate"><option value="">All</option>{% for g in gates %}<option {% if f.gate == g.key %}selected{% endif %}>{{ g.key }}</option>{% endfor %}</select></label>
+  {% if all_count %}<label>Gate <select name="gate"><option value="">All</option>{% for g in gates %}<option {% if f.gate == g %}selected{% endif %}>{{ g }}</option>{% endfor %}</select></label>
   <label>Owner <select name="owner"><option value="">All</option>{% for o in owners %}<option {% if f.owner == o %}selected{% endif %}>{{ o }}</option>{% endfor %}</select></label>
   <label>Status <select name="status"><option value="">All</option>{% for s in TASK_STATUSES %}<option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ TASK_STATUS_WORD[s] }}</option>{% endfor %}</select></label>
-  <label class="chk"><input type="checkbox" name="late" value="1" {% if f.late %}checked{% endif %}> Late only</label>
+  <label class="chk"><input type="checkbox" name="late" value="1" {% if f.late %}checked{% endif %}> Late only</label>{% endif %}
   <input type="hidden" name="view" value="{{ f.view }}">
   <button class="btn" type="submit">Filter</button>
-  <span class="spacer"></span>
-  <a class="btn" href="?project={{ project.key }}&gate={{ f.gate }}&owner={{ f.owner }}&status={{ f.status }}&late={{ f.late }}&view={{ 'table' if f.view != 'table' else 'chart' }}">{{ "Table view" if f.view != "table" else "Chart view" }}</a>
-</form>
-<div class="tile t-night">
+  {% if all_count %}<span class="spacer"></span>
+  <a class="btn" href="?project={{ project.key }}&gate={{ f.gate }}&owner={{ f.owner }}&status={{ f.status }}&late={{ f.late }}&view={{ 'table' if f.view != 'table' else 'chart' }}">{{ "Table view" if f.view != "table" else "Chart view" }}</a>{% endif %}
+</form>{% endif %}
+{% if not all_count %}
+<section class="tile t-surface"><h2>Timeline skipped</h2>
+<p>This project has no task rows from WBS.csv in the current snapshot. Add WBS.csv to a linked repository, accept its mapping, then run the project.</p>
+<a href="/p/{{ project.key }}?tab=reading">Check the WBS source and mapping</a></section>
+{% else %}<div class="tile t-night">
   <div class="chartlg">
     <span><b style="background:#5b8cff"></b>In progress</span><span><b style="background:#8b8894"></b>Done ✓</span>
     <span><b style="background:#46424f"></b>Not started</span><span><b style="background:#2f2c36;box-shadow:inset 0 0 0 1px #5a5663"></b>Deferred</span>
@@ -25,16 +29,16 @@
     <span class="spacer"></span><span>{{ tasks|length }} of {{ all_count }} tasks</span>
   </div>
   {% if not tasks %}
-    <p class="soft">No task matches. Tasks come from the WBS file (set on the project's Reading tab) or from the Tasks tab.</p>
+    <p class="soft">No task matches. Change the filters to see other WBS.csv tasks.</p>
   {% elif f.view == "table" or not svg %}
   <div class="scroll"><table class="tbl">
     <thead><tr><th>Key</th><th>Task</th><th>Gate</th><th>Owner</th><th>Start</th><th>Finish</th><th>Status</th><th class="r">Working days late</th><th>Source</th></tr></thead>
     <tbody>{% for t in tasks %}<tr><td class="num">{{ t.key }}</td><td>{{ t.title }}</td><td>{{ t.gate }}</td><td>{{ t.owner }}</td><td>{{ t.start }}</td><td>{{ t.finish }}</td><td>{{ TASK_STATUS_WORD.get(t.status, t.status) }}</td><td class="r num">{{ t.late or "" }}</td>
-      <td>{% if t.origin == "WBS" %}{{ srclink(src_link(t.row, repos)) }}{% else %}<span class="own">hand</span>{% endif %}</td></tr>{% endfor %}</tbody>
+      <td>{{ srclink(src_link(t.row, repos)) }}{% if t.row.carried_over %} · last read{% endif %}</td></tr>{% endfor %}</tbody>
   </table></div>
   {% else %}
   <div class="scroll">{{ svg|safe }}</div>
   {% endif %}
-</div>
+</div>{% endif %}
 {% endif %}
 {% endblock %}

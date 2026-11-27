@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from ..adapters.wbs import is_wbs_path
+
 SOURCE_TABLES = {"task": "task_state", "unit": "unit_state", "stage": "unit_stage_state", "pr": "pr_state",
                  "review": "review_state", "blocker": "blocker", "fact": "fact"}
 
@@ -95,6 +97,14 @@ def open_pulls(conn, snapshot_id):
         "JOIN project p ON p.id = s.project_id WHERE pr.snapshot_id = ? AND pr.state = 'OPEN' "
         "AND s.enabled AND s.github_repo <> '' AND p.state = 'ACTIVE' ORDER BY p.name, s.github_repo, pr.number", (snapshot_id,)
     ).fetchall()
+
+
+def pull_reviews(conn, snapshot_id):
+    grouped = {}
+    for row in conn.execute("SELECT source_id, project_id, pr_number, reviewer_raw, state FROM review_state "
+                            "WHERE snapshot_id = ? ORDER BY reviewer_raw COLLATE NOCASE, id", (snapshot_id,)):
+        grouped.setdefault((row["project_id"], row["source_id"], row["pr_number"]), []).append(row)
+    return grouped
 
 
 def facts(conn: sqlite3.Connection, snapshot_id: int | None, project_id: int, kind: str) -> list[dict]:
@@ -213,8 +223,12 @@ def proposals_with_decisions(conn: sqlite3.Connection, onboarding_id: int) -> li
     ).fetchall()
     out = []
     for r in rows:
+        if r["kind"] == "PERSON" and r["decision"] not in ("ACCEPTED", "EDITED"):
+            continue  # Older onboardings could suggest people. Keep the accepted history.
         item = dict(r)
         item["payload"] = json.loads(r["edited_payload"] or r["payload"])
+        if r["kind"] == "WBS" and not is_wbs_path(item["payload"].get("path", "")) and r["decision"] not in ("ACCEPTED", "EDITED"):
+            continue
         item["open"] = r["decision"] in (None, "UNDONE")
         out.append(item)
     return out

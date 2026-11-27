@@ -53,6 +53,7 @@ MODEL_ANSWER = {
 def project(conn, tmp_path):
     repo = make_aidlc_repo(tmp_path / "widgets")
     pid = hand.create_project(conn, "WIDGET", "widgets")
+    hand.set_project_team(conn, pid, "Pat Jones")
     hand.add_source(conn, pid, str(repo))
     return pid
 
@@ -62,7 +63,7 @@ def proposals(conn, oid):
 
 
 def hand_state(conn):
-    tables = ("project", "gate", "evidence_item", "person", "person_alias", "holiday", "project_setting", "hand_task")
+    tables = ("project", "gate", "evidence_item", "person", "project_person", "person_alias", "holiday", "project_setting", "hand_task")
     return {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY rowid")] for t in tables}
 
 
@@ -87,9 +88,8 @@ def test_onboarding_proposes_and_writes_no_hand_data(config, conn, project):
     patterns = {p["payload"]["which"]: p["payload"]["pattern"] for p in kinds["PATTERN"]}
     assert patterns["BRANCH_UNIT"] == "unit/<unit>; <unit>/<topic>"
     assert patterns["TASK_KEY"] == r"\b\d{1}\.\d{3}\b"
-    people = {p["payload"]["display_name"]: p["payload"]["aliases"] for p in kinds["PERSON"]}
-    assert {"Rani Putri", "Bayu", "Sari"} <= set(people) and "Mallory" not in people and "Rani" not in people
-    assert {"kind": "WBS", "value": "Rani"} in people["Rani Putri"]  # merged by first name
+    assert "PERSON" not in kinds
+    assert "PERSON" not in claude.calls[0]["schema"]["properties"]["proposals"]["items"]["properties"]["kind"]["enum"]
     assert gates["G1"]["payload"]["name"] == "Beta to pilot users" and gates["G2"]["payload"]["name"] == "General availability"
     assert kinds["PROJECT"][0]["payload"]["name"] == "Widget portal"
     assert kinds["EVIDENCE"][0]["payload"] == {"gate_key": "G1", "text": "Support runbook written"}
@@ -114,7 +114,6 @@ def test_accept_edit_reject_and_no_repeats(config, conn, project):
     hand.decide_proposal(conn, project, props[("GATE", "g9")]["id"], "reject")
     hand.decide_proposal(conn, project, props[("WBS", "wbs")]["id"], "accept")
     hand.decide_proposal(conn, project, props[("PATTERN", "BRANCH_UNIT")]["id"], "accept")
-    hand.decide_proposal(conn, project, props[("PERSON", "rani putri")]["id"], "accept")
     hand.decide_proposal(conn, project, props[("PROJECT", "project")]["id"], "accept")
     with pytest.raises(InputError, match="accepted already"):
         hand.decide_proposal(conn, project, props[("GATE", "g1")]["id"], "accept")
@@ -127,7 +126,8 @@ def test_accept_edit_reject_and_no_repeats(config, conn, project):
     proj = hand.get_project(conn, "WIDGET")
     assert proj["name"] == "Widget portal" and "out of scope" in proj["scope_note"]
     aliases = [r["value"] for r in conn.execute("SELECT value FROM person_alias")]
-    assert "rani@example.com" in aliases
+    assert aliases == []
+    assert hand.project_team(conn, project) == ["Pat Jones"]
 
     again = onboard(config, "WIDGET", now=NOW, claude=stub(MODEL_ANSWER))
     second = {(p["kind"], p["identity"]) for p in proposals(conn, again.onboarding_id)}
@@ -166,6 +166,7 @@ def test_prose_reading_off_and_model_failure(config, conn, project):
 def test_a_non_git_folder_is_refused(config, conn, tmp_path):
     (tmp_path / "plain").mkdir()
     pid = hand.create_project(conn, "PLAIN", "Plain")
+    hand.set_project_team(conn, pid, "Pat Jones")
     hand.add_source(conn, pid, str(tmp_path / "plain"))
     out = onboard(config, "PLAIN", now=NOW, claude=stub({"proposals": []}))
     assert out.result == "FAILED"
@@ -192,3 +193,34 @@ def test_cli_command_is_read_only_and_restricted():
     assert cmd[cmd.index("--max-budget-usd") + 1] == "2.00"
     assert not any(c in cmd for c in ("--dangerously-skip-permissions", "bypassPermissions"))
     assert PLAN  # fixture text used by the model stub
+
+
+def test_roster_required_before_fetch_or_model(config, conn, tmp_path):
+    pid = hand.create_project(conn, "TEAM", "Team")
+    hand.add_source(conn, pid, str(tmp_path / "missing"))
+    claude = stub(MODEL_ANSWER)
+    outcome = onboard(config, "TEAM", now=NOW, claude=claude)
+    assert outcome.result == "REFUSED" and "team" in outcome.message
+    assert not claude.calls and not conn.execute("SELECT 1 FROM onboarding").fetchone()
+
+
+def test_onboarding_skips_other_task_files_and_ignores_quoted_people(config, conn, tmp_path):
+    from .fixtures import WBS, make_repo, commit
+    pid = hand.create_project(conn, "TEAM", "Team")
+    hand.set_project_team(conn, pid, "Alex\nalex\nSam")
+    docs = make_repo(tmp_path / "docs", {"README.md": "# Team\nAlex reviews all changes on this project.",
+                                        "schedule.csv": WBS})
+    code = make_repo(tmp_path / "code", {"wbs.tsv": WBS})
+    hand.add_source(conn, pid, str(docs))
+    hand.add_source(conn, pid, str(code))
+    model = stub({"proposals": [{"kind": "PERSON", "payload": {"display_name": "Alex"},
+                                 "path": "README.md", "quote": "Alex reviews all changes on this project."}]})
+    outcome = onboard(config, "TEAM", now=NOW, claude=model)
+    kinds = {p["kind"] for p in proposals(conn, outcome.onboarding_id)}
+    assert outcome.result == "OK" and "PROJECT" in kinds and not kinds.intersection({"WBS", "PERSON"})
+    assert "Timeline skipped" in conn.execute("SELECT reason FROM run_problem WHERE adapter='wbs'").fetchone()[0]
+    assert hand.project_team(conn, pid) == ["Alex", "Sam"]
+    commit(code, {"plan/WBS.csv": WBS})
+    again = onboard(config, "TEAM", now=NOW, claude=model)
+    wbs = [p["payload"] for p in proposals(conn, again.onboarding_id) if p["kind"] == "WBS"]
+    assert [(p["source_key"], p["path"]) for p in wbs] == [("code", "plan/WBS.csv")]

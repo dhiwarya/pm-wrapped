@@ -1,0 +1,16 @@
+{% macro details(pr, reviews, url, project="") -%}
+<details class="pull-detail">
+  <summary><strong>#{{ pr.number }} {{ pr.title }}</strong> <span class="pull-author">{{ "@" ~ pr.author_raw if pr.author_raw else "Unknown author" }}</span></summary>
+  {% if project %}<div class="muted small">{{ project }}</div>{% endif %}
+  <dl class="pull-facts">
+    {% if pr.head or pr.base %}<dt>Branch</dt><dd>{{ pr.head or "Unknown" }} → {{ pr.base or "Unknown" }}</dd>{% endif %}
+    <dt>Review</dt><dd>{{ pr.review_state|replace("_", " ")|lower }}</dd>
+    <dt>Checks</dt><dd>{{ "Unavailable" if pr.ci_unread else pr.checks_state|lower }}</dd>
+    <dt>Merge status</dt><dd>{{ pr.merge_status|replace("_", " ") }}</dd>
+    {% if pr.head_sha %}<dt>Commit</dt><dd><code>{{ pr.head_sha[:7] }}</code></dd>{% endif %}
+    {% if reviews %}<dt>Reviewers</dt><dd>{% for r in reviews %}{{ r.reviewer_raw }} · {{ r.state|replace("_", " ")|lower }}{% if not loop.last %}<br>{% endif %}{% endfor %}</dd>{% endif %}
+    {% if pr.task_keys %}<dt>Tasks</dt><dd>{{ pr.task_keys|replace(";", ", ") }}</dd>{% endif %}
+  </dl>
+  {% if url %}<a class="src" href="{{ url }}">Open on GitHub</a>{% endif %}
+</details>
+{%- endmacro %}

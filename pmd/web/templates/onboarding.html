@@ -2,6 +2,7 @@
 {% from "_ui.html" import srclink, blob %}
 {% from "_selection.html" import toolbar %}
 {% set p = project %}
+{% from "_team.html" import field as team_field %}
 {% block title %}Onboarding · {{ p.name }} · pm·dash{% endblock %}
 {% block head_extra %}{% if starting is defined %}<meta http-equiv="refresh" content="2">{% elif onboarding and onboarding.result == "RUNNING" %}<meta http-equiv="refresh" content="3; url=/p/{{ project.key }}/onboarding/{{ onboarding.id }}">{% endif %}{% endblock %}
 {% block main %}
@@ -12,21 +13,23 @@
   <p>This page refreshes by itself. If nothing changes within a minute, the process could not start: see <code>logs/onboard.log</code> in the data directory.</p></section>
 {% elif not onboarding %}
 <section class="tile {{ tile }} empty">{{ blob(p.colour) }}<div class="eyebrow">No onboarding yet</div><h2>Let the agent read the sources.</h2>
-  <form method="post" action="/p/{{ p.key }}/onboard"><button class="pill" type="submit">Look for new setup</button></form></section>
+  <form method="post" action="/p/{{ p.key }}/onboard">{{ team_field(team) }}<button class="pill" type="submit">Look for new setup</button></form></section>
 {% elif onboarding.result == "RUNNING" %}
 <section class="tile {{ tile }} empty">{{ blob(p.colour) }}<div class="eyebrow">Reading · started {{ started }}</div>
   <h2>{{ onboarding.progress or "Working" }}…</h2><p>This page refreshes by itself. The agent writes proposals only; nothing is stored until you accept it.</p></section>
 {% elif onboarding.result == "FAILED" %}
 <section class="tile t-red empty"><div class="eyebrow">Onboarding failed</div><h2>Nothing was proposed.</h2><p>{{ onboarding.error }}</p>
   {% for x in problems %}<p class="d">{{ x.stage }}: {{ x.reason }}</p>{% endfor %}
-  <form method="post" action="/p/{{ p.key }}/onboard"><button class="pill" type="submit">Try again</button></form></section>
+  <form method="post" action="/p/{{ p.key }}/onboard">{{ team_field(team) }}<button class="pill" type="submit">Try again</button></form></section>
 {% else %}
+{% if not team %}<p class="note-line">Enter the project team before the next onboarding. <a href="/p/{{ p.key }}?tab=sources#project-onboarding">Set up the team</a></p>{% endif %}
 <div class="bento">
   <div class="tile {{ tile }} s7">
     {{ blob(p.colour) }}
     <div class="eyebrow">Onboarding {{ onboarding.id }} · {{ started }}</div>
     <div class="n review-n" data-count="{{ open }}">{{ open }}</div>
     <div class="what">{{ plural(open, "proposal") }} left to decide, of {{ total }}</div>
+    {% if problems|selectattr("adapter", "equalto", "wbs")|list %}<p>Timeline skipped. No readable WBS.csv mapping was found.</p>{% endif %}
     {% if open %}<p>Select proposals individually or by section. Editing a field selects that proposal. Accept saves the values shown.</p>{% endif %}
     <p class="soft">{% if onboarding.prose_read %}Prose read by the model. {{ onboarding.dropped }} {{ plural(onboarding.dropped, "proposal") }} dropped by the quote check. Claude usage ${{ "%.2f"|format(onboarding.model_cost) }}.{% else %}Only setup found by the program is shown.{% endif %}{% if onboarding.used_codex %} Codex fallback attempted.{% endif %} Took {{ took }}.</p>
   </div>

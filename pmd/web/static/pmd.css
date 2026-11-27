@@ -393,3 +393,20 @@ svg.timeline .warnlabel { fill: #ff8e98; font-weight: 700; }
 
 .names-tile { overflow: clip; align-self: start; }
 .names-tile .batch-bar { position: sticky; top: var(--nav-height, 0); z-index: 3; }
+
+.layout-switch { display: inline-flex; gap: .35rem; margin: .65rem 0; }
+.layout-switch [aria-pressed="true"] { background: var(--ink); color: var(--plane); }
+.people-grid { align-items: start; }
+.person-summary, .pull-detail > summary { cursor: pointer; }
+.person-summary .person-heading { display: inline-flex; }
+.person-summary .person-heading strong { font: 750 1.4rem var(--display); overflow-wrap: anywhere; }
+.person-summary .person-count { display: block; }
+[data-people-layout="rows"] .people-grid { grid-template-columns: 1fr; }
+[data-people-layout="rows"] .person-summary .person-count { display: inline; font-size: inherit; margin: 0 0 0 1rem; }
+.person-projects { margin-inline-start: .5rem; color: var(--ink-2); }
+.pull-detail { overflow-wrap: anywhere; }
+.pull-author { font-weight: 600; color: var(--ink-2); }
+.pull-facts { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: .2rem 1rem; margin: .6rem 0; }
+.pull-facts dt { color: var(--ink-2); }
+.pull-facts dd { margin: 0; }
+.person-list .person-pull { display: block; }

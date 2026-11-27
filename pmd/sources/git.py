@@ -112,17 +112,6 @@ def last_change(mirror: Path, commit: str, path: str) -> str:
     return out.decode().strip()
 
 
-def authors(mirror: Path, commit: str, limit: int = 1000) -> list[tuple[str, str]]:
-    """(name, email) of commit authors, most frequent first."""
-    out = run_git(["--git-dir", str(mirror), "log", f"-{limit}", "--format=%an%x00%ae", commit], timeout=60).decode()
-    counts: dict[tuple[str, str], int] = {}
-    for line in out.splitlines():
-        name, _, email = line.partition("\x00")
-        if name:
-            counts[(name.strip(), email.strip().lower())] = counts.get((name.strip(), email.strip().lower()), 0) + 1
-    return [k for k, _ in sorted(counts.items(), key=lambda kv: -kv[1])]
-
-
 def tree_paths(mirror: Path, commit: str, paths: list[str]) -> list[str]:
     """The given paths that exist in the commit."""
     if not paths:

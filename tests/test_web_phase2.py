@@ -1,7 +1,6 @@
 """Web flow of Phases 2 and 2b: add from a repository, review, run, read the views."""
 
 import json
-import re
 from datetime import UTC, datetime
 
 import pytest
@@ -45,7 +44,7 @@ def proposal_ids(conn, kind):
 
 
 def test_add_from_a_repository_review_and_run(live, conn):
-    r = post(live, "/projects", {"sources": str(live.repo)})
+    r = post(live, "/projects", {"team": "Robin", "sources": str(live.repo)})
     assert r.status_code == 200 and "/p/WIDGETS/onboarding?after=0" in str(r.url)
     assert live.spawned == [["onboard", "--project", "WIDGETS"]]
     page = r.text
@@ -67,8 +66,8 @@ def test_add_from_a_repository_review_and_run(live, conn):
     for ident, pid in proposal_ids(conn, "PATTERN").items():
         post(live, f"/p/WIDGETS/proposals/{pid}", {"action": "accept"})
     oid = conn.execute("SELECT max(id) FROM onboarding").fetchone()[0]
-    r = post(live, f"/p/WIDGETS/onboarding/{oid}/accept-kind", {"kind": "PERSON"})
-    assert re.search(r"Accepted \d+ people", r.text)
+    assert hand.project_team(conn, hand.get_project(conn, "WIDGETS")["id"]) == ["Robin"]
+    assert not proposal_ids(conn, "PERSON")
     r = post(live, f"/p/WIDGETS/onboarding/{oid}/accept-kind", {"kind": "GATE"})
     assert "Select the individual proposals" in r.text
     gates_now = {g["key"]: g["date"] for g in hand.list_gates(conn, hand.get_project(conn, "WIDGETS")["id"])}
@@ -91,7 +90,7 @@ def test_add_from_a_repository_review_and_run(live, conn):
 
 
 def test_stale_banner_after_a_missed_scheduled_run(live, conn):
-    post(live, "/projects", {"sources": str(live.repo)})
+    post(live, "/projects", {"team": "Robin", "sources": str(live.repo)})
     post(live, "/run", {})
     assert "Showing an old snapshot" not in live.get("/").text
     page_before_run_times = live.get("/p/WIDGETS/onboarding/1").text
@@ -102,7 +101,7 @@ def test_stale_banner_after_a_missed_scheduled_run(live, conn):
 
 
 def test_sources_reading_links_and_names(live, conn):
-    post(live, "/projects", {"sources": str(live.repo)})
+    post(live, "/projects", {"team": "Robin", "sources": str(live.repo)})
     pid = hand.get_project(conn, "WIDGETS")["id"]
     r = post(live, "/p/WIDGETS/reading", {"task_key_pattern": "([", "prose_reading": "1"})
     assert "not a valid regular expression" in r.text
@@ -136,7 +135,7 @@ def test_onboarding_page_states(live, conn):
 
 
 def test_onboarding_page_shows_starting_until_the_new_row_exists(live, conn):
-    post(live, "/projects", {"sources": str(live.repo)})
+    post(live, "/projects", {"team": "Robin", "sources": str(live.repo)})
     page = live.get("/p/WIDGETS/onboarding?after=1").text  # onboarding 1 exists; 2 not yet
     assert "The onboarding agent is starting" in page and 'http-equiv="refresh"' in page
     assert "Setup review" in live.get("/p/WIDGETS/onboarding?after=0").text
@@ -149,7 +148,7 @@ def test_pmd_js_reads_the_action_attribute():
 
 
 def test_selected_proposals_apply_edits_and_dependencies_together(live, conn):
-    post(live, "/projects", {"sources": str(live.repo)})
+    post(live, "/projects", {"team": "Robin", "sources": str(live.repo)})
     gate = str(proposal_ids(conn, "GATE")["g1"])
     evidence = str(proposal_ids(conn, "EVIDENCE")["g1|support runbook written"])
     url = "/p/WIDGETS/onboarding/1/decide-selected"
@@ -173,7 +172,7 @@ def test_selected_proposals_apply_edits_and_dependencies_together(live, conn):
 
 
 def test_attach_selected_names_is_atomic_and_updates_both_views(live, conn):
-    post(live, "/projects", {"sources": str(live.repo)})
+    post(live, "/projects", {"team": "Robin", "sources": str(live.repo)})
     post(live, "/run")
     snap = conn.execute("SELECT snapshot_id FROM current_snapshot").fetchone()[0]
     pid = hand.get_project(conn, "WIDGETS")["id"]
@@ -206,3 +205,53 @@ def test_bulk_evidence_rejects_rows_from_other_gates(client, conn):
     assert "Marked 1 selected as met." in post(client, url, {"items": json.dumps(rows[:1])}).text
     item = hand.get_item(conn, pid, int(first))
     assert (item["hand_state"], item["note"], item["evidence_url"]) == ("MET", "Agreed", "https://example.org/proof")
+
+
+def test_team_is_saved_before_web_onboarding_and_reused(live, conn):
+    missing = post(live, "/projects", {"sources": str(live.repo), "team": "  "})
+    assert "Enter at least one team member" in missing.text
+    assert not hand.list_projects(conn) and not live.spawned
+    post(live, "/projects", {"sources": str(live.repo), "team": "Alex\nSam\nalex"})
+    pid = hand.get_project(conn, "WIDGETS")["id"]
+    assert hand.project_team(conn, pid) == ["Alex", "Sam"]
+    assert "Alex\nSam</textarea>" in live.get("/p/WIDGETS?tab=sources").text
+    assert "at least one team member" in post(live, "/p/WIDGETS/onboard", {"team": ""}).text
+    assert len(live.spawned) == 1
+    post(live, "/p/WIDGETS/onboard", {"team": "Sam\nToni"})
+    assert hand.project_team(conn, pid) == ["Sam", "Toni"] and len(live.spawned) == 2
+
+
+def test_timeline_uses_only_wbs_and_clears_after_its_removal(live, conn):
+    from .fixtures import git
+    post(live, "/projects", {"sources": str(live.repo), "team": "Robin"})
+    pid = hand.get_project(conn, "WIDGETS")["id"]
+    hand.create_task(conn, pid, "MANUAL", title="Hand-only item", owner="Robin", finish="2034-03-14")
+    hand.create_gate(conn, pid, "MANUALGATE", "Hand gate", "2034-03-14")
+    assert "Timeline skipped" in live.get("/timeline").text
+    post(live, f"/p/WIDGETS/proposals/{next(iter(proposal_ids(conn, 'WBS').values()))}", {"action": "accept"})
+    post(live, "/run")
+    for view in ("table", "chart"):
+        page = live.get(f"/timeline?view={view}").text
+        assert "Sign-in flow" in page and "G1" in page
+        assert "MANUALGATE" not in page and "Hand-only item" not in page
+    git(live.repo, "mv", "plan/wbs.csv", "plan/schedule.csv")
+    git(live.repo, "commit", "-qm", "Move the file")
+    post(live, "/run")
+    page = live.get("/timeline").text
+    assert "Timeline skipped" in page and "Sign-in flow" not in page
+    assert "Hand-only item" in live.get("/p/WIDGETS?tab=tasks").text
+
+
+def test_old_pending_people_cannot_be_accepted_from_cached_page(live, conn):
+    post(live, "/projects", {"sources": str(live.repo), "team": "Robin"})
+    pid = hand.get_project(conn, "WIDGETS")["id"]
+    oid = conn.execute("SELECT max(id) FROM onboarding").fetchone()[0]
+    row = conn.execute(
+        "INSERT INTO onboarding_proposal(onboarding_id,project_id,kind,identity,payload,read_by,src_path) "
+        "VALUES (?, ?, 'PERSON', 'guessed', ?, 'PROGRAM', 'readme.md')",
+        (oid, pid, json.dumps({"display_name": "Guessed"})),
+    ).lastrowid
+    assert 'id="k-PERSON"' not in live.get("/p/WIDGETS/onboarding").text
+    assert "team list" in post(live, f"/p/WIDGETS/proposals/{row}", {"action": "accept"}).text
+    assert hand.project_team(conn, pid) == ["Robin"]
+    assert len(hand.list_people(conn)) == 1

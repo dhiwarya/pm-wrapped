@@ -1,25 +1,33 @@
 {% extends 'base.html' %}
 {% from '_ui.html' import srclink %}
 {% from '_selection.html' import names %}
+{% from "_pull.html" import details as pull_details %}
 {% block title %}People · pm·dash{% endblock %}
 {% macro entries(label, rows) %}
 <details class="person-list">
   <summary><strong>{{ rows|length }}</strong> {{ label }}</summary>
   {% if rows %}<ul class="clist">{% for entry in rows %}
-    <li><span>{{ entry.project }} · {{ entry.title }}{% if entry.late %} · {{ entry.late }} {{ plural(entry.late, 'working day') }} late{% endif %}
+    {% if entry.pr %}<li class="person-pull">{{ pull_details(entry.pr, entry.reviews, entry.pr_url or entry.src.url, entry.project) }}
+      {% if entry.carried %}<span class="muted small">Carried over</span>{% endif %}</li>
+    {% else %}<li><span>{{ entry.project }} · {{ entry.title }}{% if entry.late %} · {{ entry.late }} {{ plural(entry.late, 'working day') }} late{% endif %}
       {% if entry.finish and label == 'tasks due in the next 5 working days' %} · {{ short_date(entry.finish) }}{% endif %}</span>
-      <span>{{ srclink(entry.src) }}{% if entry.carried %} <span class="muted small">Carried over</span>{% endif %}</span></li>
+      <span>{{ srclink(entry.src) }}{% if entry.carried %} <span class="muted small">Carried over</span>{% endif %}</span></li>{% endif %}
   {% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}
 </details>
 {% endmacro %}
 {% block main %}
-<div class="vhead"><h1>People</h1></div>
+<div class="vhead"><h1>People</h1>
+  {% if cards %}<div class="layout-switch" role="group" aria-label="People layout">
+    <button type="button" class="btn" data-people-layout="grid" aria-pressed="true">Grid</button>
+    <button type="button" class="btn" data-people-layout="rows" aria-pressed="false">Rows</button>
+  </div>{% endif %}</div>
 {% if cards %}
 <div class="people-grid">
-  {% for card in cards %}<article class="tile t-surface person-card" id="person-{{ card.id }}">
-    <div class="person-heading"><span class="person-initial {{ COLOUR_TILE[card.colour] }}" aria-hidden="true">{{ card.name[0]|upper }}</span><h2>{{ card.name }}</h2></div>
-    <div class="person-count">{{ card.reviews|length }}</div>
-    <p>{{ plural(card.reviews|length, 'review') }} waiting</p>
+  {% for card in cards %}<details class="tile t-surface person-card" id="person-{{ card.id }}">
+    <summary class="person-summary"><span class="person-heading"><span class="person-initial {{ COLOUR_TILE[card.colour] }}" aria-hidden="true">{{ card.name[0]|upper }}</span><strong>{{ card.name }}</strong></span>
+    {% if card.projects %}<small class="person-projects">{{ card.projects|join(" · ") }}</small>{% endif %}
+    <span class="person-count">{{ card.reviews|length }}</span>
+    <span>{{ plural(card.reviews|length, 'review') }} waiting · {{ card.prs|length }} open {{ plural(card.prs|length, "PR") }}</span></summary>
     {% if card.reviews and card.reviews[0].age is not none %}{% set oldest = card.reviews[0] %}
       <p class="muted">Oldest wait · {{ oldest.age }} {{ plural(oldest.age, 'working day') }} · {{ srclink(oldest.src) }}{% if oldest.carried %} · carried over{% endif %}</p>
     {% endif %}
@@ -28,7 +36,7 @@
     {{ entries('tasks in progress', card.in_work) }}
     {{ entries('late tasks', card.late) }}
     {{ entries('tasks due in the next 5 working days', card.due) }}
-  </article>{% endfor %}
+  </details>{% endfor %}
 </div>
 {% else %}<section class="tile t-surface empty"><h2>No people yet</h2><p>Add a person in <a href="/settings">Settings</a>, or attach a name from the latest run below.</p></section>{% endif %}
 <section id="unmatched-names" class="tile t-surface people-unmatched names-tile"><h2>Unmatched names</h2>

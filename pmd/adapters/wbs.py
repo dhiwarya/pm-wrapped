@@ -101,9 +101,16 @@ def guess_mapping(header: list[str], rows: list[list[str]]) -> dict | None:
     return {"columns": columns, "date_format": guess_date_format(dates), "status": status_map, "remaining_unit": "days"}
 
 
+def is_wbs_path(path: str) -> bool:
+    return Path(path).name.casefold() == "wbs.csv"
+
+
 def extract(root: Path, path: str, mapping_json: str, *, source_id: int, commit: str, project_id: int,
             snapshot_id: int, gate_keys: set[str]) -> Result:
     result = Result()
+    if not is_wbs_path(path):
+        result.problem("wbs", path, "The timeline requires a file named WBS.csv.")
+        return result
     target = root / path
     if not target.is_file():
         result.problem("wbs", path, "WBS file not found at the read commit")
@@ -143,6 +150,7 @@ def extract(root: Path, path: str, mapping_json: str, *, source_id: int, commit:
             continue
         seen.add(key)
         gates = [g.strip() for g in re.split(r"[;,]", cell(row, "gate")) if g.strip()]
+        source_gates = ";".join(gates)
         unknown = [g for g in gates if g not in gate_keys]
         if unknown:
             result.problem("wbs", path, f"unknown gate key {', '.join(unknown)}, task read with no gate for it", number)
@@ -162,7 +170,7 @@ def extract(root: Path, path: str, mapping_json: str, *, source_id: int, commit:
             result.problem("wbs", path, f"status word {raw_status!r} is not in the mapping", number)
             status = ""
         result.add("task_state", {**base, "key": key[:60], "title": cell(row, "title")[:300], "owner_raw": cell(row, "owner")[:120],
-                                  "gate_key": ";".join(gates), "start": dates["start"], "finish": dates["finish"], "status": status,
+                                  "gate_key": ";".join(gates), "wbs_gates": source_gates, "start": dates["start"], "finish": dates["finish"], "status": status,
                                   "remaining": cell(row, "remaining")[:30], "depends_on": "; ".join(k for k in re.split(r"[;,\s]+", cell(row, "depends_on")) if k),
                                   **file_ref(source_id, commit, path, number)})
     return result

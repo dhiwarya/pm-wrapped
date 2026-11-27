@@ -25,7 +25,7 @@ from . import finds
 
 ClaudeCall = Callable[..., cli.CliResult]
 GATE_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,15}")
-MODEL_KINDS = ("PROJECT", "GATE", "EVIDENCE", "PERSON", "HOLIDAY")
+MODEL_KINDS = ("PROJECT", "GATE", "EVIDENCE", "HOLIDAY")
 
 OUTPUT_FORM = {
     "type": "object",
@@ -39,7 +39,7 @@ OUTPUT_FORM = {
                     "payload": {
                         "type": "object",
                         "properties": {k: {"type": "string"} for k in
-                                       ("key", "name", "date", "description", "scope_note", "gate_key", "text", "display_name", "label")},
+                                       ("key", "name", "date", "description", "scope_note", "gate_key", "text", "label")},
                     },
                     "path": {"type": "string"},
                     "quote": {"type": "string"},
@@ -60,8 +60,9 @@ Read what you need and propose the project's setup. Use these kinds only:
 - GATE: a dated point where the project is accepted or reviewed (a milestone, an acceptance gate, a release), not any date.
   payload key (short, like G1 or BETA, taken from the document if it has one), name, date (YYYY-MM-DD), description.
 - EVIDENCE: one thing that must be shown to pass a gate, in the words of the document. payload gate_key, text.
-- PERSON: someone who owns or reviews work. payload display_name.
 - HOLIDAY: a non-working day listed in the repository. payload date (YYYY-MM-DD), label.
+
+The user supplies the team. Do not infer team membership or propose people.
 
 For every proposal give path (the file, relative to this folder) and quote: the exact words from that file that support it,
 copied character for character, 20 to 400 characters, on as few lines as possible. A GATE quote must contain its date.
@@ -133,6 +134,8 @@ def _onboard(conn, config: Config, key: str, now: datetime, github_factory, clau
     sources = R.sources(conn, p["id"])
     if not sources:
         return OnboardOutcome(None, "REFUSED", "the project has no sources")
+    if not conn.execute("SELECT 1 FROM project_person WHERE project_id = ? LIMIT 1", (p["id"],)).fetchone():
+        return OnboardOutcome(None, "REFUSED", "Enter the project team on the Sources tab before starting onboarding.")
     oid = R.start_onboarding(conn, p["id"], now)
     work = config.data_dir / "runs" / f"onboard-{oid}"
     token = read_token(config.data_dir / "secrets" / "github-token")
@@ -147,8 +150,6 @@ def _onboard(conn, config: Config, key: str, now: datetime, github_factory, clau
     try:
         # ---------------------------------------------------------------- OB-1 Fetch
         pr_titles: list[str] = []
-        pr_people: list[str] = []
-        authors: list[tuple[str, str]] = []
         branch_names: dict[int, list[str]] = {}
         for s in sources:
             R.onboarding_progress(conn, oid, f"Fetching {s['key']}")
@@ -164,14 +165,11 @@ def _onboard(conn, config: Config, key: str, now: datetime, github_factory, clau
                         R.add_problem(conn, onboarding_id=oid, project_id=p["id"], stage="OB-1", path=path, reason=f"not read: {why}")
                 checkouts[s["id"]] = (sha, work / "checkout" / s["key"])
                 branch_names[s["id"]] = git.branches(mirror)
-                authors += git.authors(mirror, sha)
                 if s["github_repo"] and token:
                     client = github_factory(token, log_request)
                     try:
                         for pr in recent_prs(client, s["github_repo"]):
                             pr_titles.append(pr.get("title", ""))
-                            pr_people.append((pr.get("user") or {}).get("login", ""))
-                            pr_people += [u.get("login", "") for u in pr.get("requested_reviewers") or []]
                     finally:
                         client.close()
             except (git.GitError, GitHubError, OSError) as exc:
@@ -182,8 +180,7 @@ def _onboard(conn, config: Config, key: str, now: datetime, github_factory, clau
             return OnboardOutcome(oid, "FAILED", "no source could be read")
 
         # ---------------------------------------------------------------- OB-2 Find by program
-        R.onboarding_progress(conn, oid, "Looking for the WBS, milestones, patterns and people")
-        wbs_owners: list[str] = []
+        R.onboarding_progress(conn, oid, "Looking for the WBS, milestones and patterns")
         first_wbs = None
         for s in sources:
             if s["id"] not in checkouts:
@@ -196,17 +193,18 @@ def _onboard(conn, config: Config, key: str, now: datetime, github_factory, clau
                 text = (root / first_wbs["payload"]["path"]).read_text(encoding="utf-8-sig", errors="replace")
                 header, rows = wbs.read_rows(text)
                 cols = first_wbs["payload"]["mapping"]["columns"]
-                ki, oi = header.index(cols["key"]), header.index(cols["owner"]) if "owner" in cols else None
+                ki = header.index(cols["key"])
                 first_wbs["_keys"] = [r[ki].strip() for r in rows if len(r) > ki and r[ki].strip()]
-                if oi is not None:
-                    wbs_owners = sorted({r[oi].strip() for r in rows if len(r) > oi and r[oi].strip()})
             proposals += found_wbs
             proposals += finds.dashboard_candidates(root, s["id"], s["key"], sha)
             proposals += finds.milestone_tables(root, s["id"], sha)
             proposals += finds.branch_pattern(branch_names.get(s["id"], []), s["id"], sha, "")
-        any_sha, any_id = next((v[0], k) for k, v in checkouts.items())
-        proposals += finds.task_key_pattern(first_wbs, pr_titles, any_id, any_sha)
-        proposals += finds.people(authors, pr_people, wbs_owners, any_id, any_sha)
+        if first_wbs:
+            ref = first_wbs["src"]
+            proposals += finds.task_key_pattern(first_wbs, pr_titles, ref["src_source_id"], ref["src_commit"])
+        else:
+            R.add_problem(conn, onboarding_id=oid, project_id=p["id"], stage="OB-2", adapter="wbs",
+                          reason="Timeline skipped. No readable WBS.csv with a task mapping was found in the checked repositories.")
 
         # ---------------------------------------------------------------- OB-3 Read by model
         dropped = 0
@@ -234,7 +232,11 @@ def _onboard(conn, config: Config, key: str, now: datetime, github_factory, clau
                                   reason=f"not read: {item.get('why', '')}"[:300])
 
         # ---------------------------------------------------------------- OB-4 Check: not proposed again (R-O5)
-        final = _filter_new(proposals, R.existing_setup(conn, p["id"]), R.rejected_identities(conn, p["id"]))
+        have = R.existing_setup(conn, p["id"])
+        configured = checkouts.get(p["wbs_source_id"])
+        if configured and not (configured[1] / p["wbs_path"]).is_file():
+            have["WBS"].discard("wbs")
+        final = _filter_new(proposals, have, R.rejected_identities(conn, p["id"]))
 
         # ---------------------------------------------------------------- OB-5 Store
         for prop in final:
@@ -253,7 +255,7 @@ def _context(root: Path, found: list[dict], conn, project_id: int) -> str:
     if len(files) > 400:
         listing += f"\n- ... and {len(files) - 400} more files"
     already = [f"- {f['kind']}: {json.dumps({k: v for k, v in f['payload'].items() if k in ('key', 'name', 'date', 'path', 'display_name')})}"
-               for f in found if f["kind"] in ("GATE", "PROJECT", "WBS", "PERSON")][:60]
+               for f in found if f["kind"] in ("GATE", "PROJECT", "WBS")][:60]
     have = R.existing_setup(conn, project_id)
     tracker = [f"- gates: {', '.join(sorted(have['GATE'])) or 'none'}"]
     return ("Files in this folder:\n" + listing + "\n\nAlready found by the program:\n" + ("\n".join(already) or "- nothing")
@@ -309,13 +311,6 @@ def _check_model(items: list, root: Path, source_id: int, commit: str) -> tuple[
                 continue
             prop["payload"] = {"gate_key": payload["gate_key"], "text": payload["text"][:500]}
             prop["identity"] = R.evidence_identity(payload["gate_key"], payload["text"])
-        elif kind == "PERSON":
-            name = payload.get("display_name", "")
-            if not name:
-                dropped += 1
-                continue
-            prop["payload"] = {"display_name": name[:80], "aliases": [{"kind": "DOC", "value": name[:80]}]}
-            prop["identity"] = name.lower()
         elif kind == "HOLIDAY":
             try:
                 prop["payload"] = {"date": date.fromisoformat(payload.get("date", "")).isoformat(), "label": payload.get("label", "")[:80]}
@@ -339,11 +334,9 @@ def _filter_new(proposals: list[dict], have: dict[str, set[str]], rejected: set[
             continue
         if ident in have.get(kind, set()):
             continue
-        if kind == "PERSON" and any(a.get("value", "").lower() in have["PERSON"] for a in prop["payload"].get("aliases", [])):
-            continue
         if (kind, ident, prop.get("quote", "")) in rejected:
             continue
         seen.add((kind, ident))
         out.append(prop)
-    order = {"PROJECT": 0, "GATE": 1, "EVIDENCE": 2, "WBS": 3, "DASHBOARD_FILE": 4, "PATTERN": 5, "PERSON": 6, "HOLIDAY": 7}
+    order = {"PROJECT": 0, "GATE": 1, "EVIDENCE": 2, "WBS": 3, "DASHBOARD_FILE": 4, "PATTERN": 5, "HOLIDAY": 6}
     return sorted(out, key=lambda p: (order[p["kind"]], p["payload"].get("date", ""), p["identity"]))

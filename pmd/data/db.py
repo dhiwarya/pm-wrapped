@@ -14,6 +14,7 @@ HAND_TABLES = (
     "project",
     "project_setting",
     "person",
+    "project_person",
     "gate",
     "evidence_item",
     "hand_task",

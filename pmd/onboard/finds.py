@@ -43,7 +43,9 @@ def text_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
 
 def wbs_candidates(root: Path, source_id: int, source_key: str, commit: str) -> list[dict]:
     found = []
-    for path in text_files(root, (".csv", ".tsv")):
+    for path in text_files(root, (".csv",)):
+        if not wbs.is_wbs_path(path.name):
+            continue
         text = path.read_text(encoding="utf-8-sig", errors="replace")
         header, rows = wbs.read_rows(text)
         mapping = wbs.guess_mapping(header, rows)
@@ -108,34 +110,6 @@ def task_key_pattern(wbs_proposal: dict | None, pr_titles: list[str], source_id:
     return [{"kind": "PATTERN", "identity": "TASK_KEY", "read_by": "PROGRAM",
              "payload": {"which": "TASK_KEY", "pattern": pattern, "examples": (hits or root_keys)[:5]},
              "src": {"src_source_id": source_id, "src_commit": commit, "src_path": wbs_proposal["payload"]["path"], "src_line_from": 1, "src_line_to": 1}}]
-
-
-def people(authors: list[tuple[str, str]], pr_people: list[str], wbs_owners: list[str], source_id: int, commit: str) -> list[dict]:
-    out: dict[str, dict] = {}
-    for name, email in authors[:40]:
-        key = name.lower()
-        entry = out.setdefault(key, {"display_name": name, "aliases": []})
-        if email and "noreply" not in email:
-            entry["aliases"].append({"kind": "GIT", "value": email})
-    first_names: dict[str, list[str]] = {}
-    for key, entry in out.items():
-        first_names.setdefault(entry["display_name"].split()[0].lower(), []).append(key)
-    for name in wbs_owners:
-        if name.lower() in out:
-            out[name.lower()]["aliases"].append({"kind": "WBS", "value": name})
-            continue
-        same = first_names.get(name.lower(), [])
-        if len(same) == 1 and " " not in name.strip():
-            # "Rani" in the WBS is the one git author "Rani Putri": one person, two aliases
-            out[same[0]]["aliases"].append({"kind": "WBS", "value": name})
-            continue
-        out[name.lower()] = {"display_name": name, "aliases": [{"kind": "WBS", "value": name}]}
-    for login in pr_people:
-        if login and not login.endswith("[bot]") and login.lower() not in out:
-            out[login.lower()] = {"display_name": login, "aliases": [{"kind": "GITHUB", "value": login}]}
-    return [{"kind": "PERSON", "identity": k, "read_by": "PROGRAM", "payload": v,
-             "src": {"src_source_id": source_id, "src_commit": commit, "src_path": "(commit authors, PRs and WBS owners)",
-                     "src_line_from": None, "src_line_to": None}} for k, v in out.items()]
 
 
 def milestone_tables(root: Path, source_id: int, commit: str) -> list[dict]:

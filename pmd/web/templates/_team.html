@@ -1,0 +1,6 @@
+{% macro field(members=[]) -%}
+<div class="field"><label for="project-team">Project team, one name per line</label>
+  <textarea name="team" id="project-team" rows="3" required placeholder="Alex Chen&#10;Sam Rivera">{{ members|join('\n') }}</textarea>
+  <p class="hint">Enter everyone working on this project. You can attach GitHub usernames to these people later.</p>
+</div>
+{%- endmacro %}

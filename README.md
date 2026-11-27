@@ -55,6 +55,8 @@ Secrets, both optional, in `<data_dir>/secrets/` with mode 600:
 - `github-token`: a read-only token scoped to the tracked repositories. For full private-repository CI coverage, use a GitHub App token with read access to Contents, Pull requests, Issues, Commit statuses and Checks. A fine-grained personal access token can read PRs and reviews, but GitHub limits access to check runs. PM Dash lists the affected PRs with their available review data and records the missing CI access in Runs. [GitHub Checks permissions](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
 - `claude-token`: a Claude Code token from `claude setup-token`. Without it, the CLI uses the login it already has.
 
+Enter the project team (one name per line) before adding and reading repositories. On an existing project, review the team on the Sources tab before starting onboarding again. The team is entered by the user.
+
 The onboarding agent calls the Claude Code CLI with read tools only (`--restricted --tools Read,Glob,Grep`), inside a copy of the repository without agent instruction files, with a money limit (Settings, default $2 per source).
 
 ## Model fallback and weekday digest
@@ -68,7 +70,8 @@ Projects with **Prose reading** on can send project excerpts to Anthropic and, w
 ## People, reports, and upkeep
 
 - **Pull requests** lists open PRs from enabled GitHub sources after each run. Today highlights PRs that need attention or look ready to merge. The weekday digest names each actionable PR with its reason and GitHub URL. Ready to merge requires an approval on the latest commit, passing CI and a clean GitHub merge status. Review the diff on GitHub before merging.
-- **People** shows pending reviews, open PRs authored, and active tasks by person. Attach unmatched repository names to a person from the same page.
+- **Timeline** uses the mapped WBS.csv in any folder of a linked repository (filename matched case-insensitively). When it is missing, onboarding continues and the timeline is skipped.
+- **People** remembers your choice of grid or rows in this browser. Expand a person and then a PR to see its review and CI details. The page shows pending reviews, open PRs authored, and active tasks by person. Attach unmatched repository names to a person from the same page.
 - **Gates → Download Markdown report** exports confirmed health or the outcome, evidence, linked facts, open blockers, and the snapshot's commits. Add `?include_proposal=true` to the report URL to include the current pending judgment in its own section.
 - **Settings → Retention** defaults to 90 days of full snapshots and 14 days of run and onboarding work files. Older history keeps the last snapshot in each week. Digests and hand records, including confirmations and audit history, are retained. Removing a source deletes its PM Dash mirror. Deleting a project removes the daily digests that included it, including shared digests. Earlier backups preserve their original contents.
 - **Backups** use SQLite's online backup and keep the last 14 copies in `<data_dir>/backup/`. The database contains dashboard data and digests. Mirrors, work files, and credentials live outside those copies.

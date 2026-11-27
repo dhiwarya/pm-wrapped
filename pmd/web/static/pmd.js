@@ -198,6 +198,25 @@
     }).observe(document.querySelector(".top"));
   }
 
+  function applyPeopleLayout(layout) {
+    document.documentElement.dataset.peopleLayout = layout;
+    for (const button of $$("[data-people-layout]", document.querySelector("main")))
+      button.setAttribute("aria-pressed", String(button.dataset.peopleLayout === layout));
+  }
+  if (document.getElementById("unmatched-names")) {
+    let layout = "grid";
+    try { if (localStorage.getItem("pmd-people-layout") === "rows") layout = "rows"; } catch {}
+    applyPeopleLayout(layout);
+    document.addEventListener("click", event => {
+      const button = event.target.closest("button[data-people-layout]");
+      if (!button) return;
+      layout = button.dataset.peopleLayout;
+      applyPeopleLayout(layout);
+      try { localStorage.setItem("pmd-people-layout", layout); } catch {}
+    });
+    document.addEventListener("pmd:saved", () => applyPeopleLayout(layout));
+  }
+
   /* dialogs */
   document.addEventListener("click", function (e) {
     var open = e.target.closest("[data-open]");
